@@ -37,11 +37,8 @@ window.customElements.define("dnit-main", class extends LoopElement {
     let width = this.canvas.offsetWidth;
     let height = this.canvas.offsetHeight;
 
-    // this.canvas.width = width * window.devicePixelRatio;
-    // this.canvas.height = height * window.devicePixelRatio;
-
-    this.canvas.width = width;
-    this.canvas.height = height;
+    this.canvas.width = width * Math.min(window.devicePixelRatio, 2);
+    this.canvas.height = height * Math.min(window.devicePixelRatio, 2);
 
     this.view.resize(width, height);
   }

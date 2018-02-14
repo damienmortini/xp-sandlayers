@@ -6,13 +6,18 @@ import TrackballController from "../../node_modules/dlib/3d/controllers/Trackbal
 import GLVertexAttribute from "../../node_modules/dlib/gl/GLVertexAttribute.js";
 import GLVertexArray from "../../node_modules/dlib/gl/GLVertexArray.js";
 import GLBuffer from "../../node_modules/dlib/gl/GLBuffer.js";
+import GLFrameBuffer from "../../node_modules/dlib/gl/GLFrameBuffer.js";
+import GLTexture from "../../node_modules/dlib/gl/GLTexture.js";
+import PlaneMesh from "../../node_modules/dlib/3d/PlaneMesh.js";
 import GUI from "../../node_modules/dlib/gui/GUI.js";
+import DepthShader from "../../node_modules/dlib/shaders/DepthShader.js";
 import Pointer from "../../node_modules/dlib/input/Pointer.js";
+import SandLayer from "./SandLayer.js";
 
-const GRAINS = 500000;
+const DEPTH_FRAME_BUFFER_SIZE = 1024;
 
 export default class View {
-  constructor({canvas} = {canvas}) {
+  constructor({ canvas } = { canvas }) {
     this.canvas = canvas;
 
     const webGLOptions = {
@@ -23,10 +28,10 @@ export default class View {
 
     this.pointer = Pointer.get(this.canvas);
 
-    if(!/\bforcewebgl1\b/.test(window.location.search)) {
+    if (!/\bforcewebgl1\b/.test(window.location.search)) {
       this.gl = this.canvas.getContext("webgl2", webGLOptions);
     }
-    if(!this.gl) {
+    if (!this.gl) {
       this.gl = this.canvas.getContext("webgl", webGLOptions) || this.canvas.getContext("experimental-webgl", webGLOptions);
     }
 
@@ -35,164 +40,116 @@ export default class View {
     this.cameraController = new TrackballController({
       matrix: this.camera.transform,
       distance: Math.sqrt(3),
-      enabled: false
+      // enabled: false
     });
 
-    this.gl.clearColor(.8, .8, .8, 1);
-    this.gl.enable(this.gl.CULL_FACE);
-    this.gl.enable(this.gl.DEPTH_TEST);
+    this.gl.clearColor(0, 0, 0, 1);
+    // this.gl.enable(this.gl.CULL_FACE);
+    // this.gl.enable(this.gl.DEPTH_TEST);
+
+    this.depthFrameBuffer = new GLFrameBuffer({
+      gl: this.gl
+    });
+    this.depthFrameBuffer.attach({
+      texture: new GLTexture({
+        gl: this.gl,
+        width: DEPTH_FRAME_BUFFER_SIZE,
+        height: DEPTH_FRAME_BUFFER_SIZE,
+        minFilter: this.gl.LINEAR
+      })
+    })
+
+    this.sandLayer = new SandLayer({
+      gl: this.gl
+    });
+
+    this.plane = new GLMesh({
+      gl: this.gl,
+      attributes: [
+        ["position", new GLVertexAttribute({
+          gl: this.gl,
+          data: new PlaneMesh({
+            width: 2,
+            height: 2
+          }).positions,
+          size: 3
+        })]
+      ]
+    });
 
     this.program = new GLProgram({
       gl: this.gl,
-      transformFeedbackVaryings: ["vPosition", "vVelocity"],
-      uniforms: [
-        ["transform", new Matrix4()]
-      ],
       vertexShaderChunks: [
         ["start", `
-          uniform mat4 projectionView;
-          uniform mat4 transform;
-          uniform vec4 pointer;
-          uniform float aspectRatio;
-
           in vec3 position;
-          in vec3 velocity;
-
           out vec3 vPosition;
-          out vec3 vVelocity;
         `],
         ["end", `
-          vec3 position = position;
-          vec3 velocity = velocity;
-          vec4 pointer = pointer;
-
-          position.x *= aspectRatio;
-          pointer.x *= aspectRatio;
-          
-          velocity.xy += pointer.zw * .002 * (.2 + position.z * .8) * smoothstep(0., 1., .3 - distance(position.xy, pointer.xy));
-          velocity *= .95;
-          
-          position += velocity;
-          
-          gl_Position = projectionView * transform * vec4(vec3(position.xy, position.z * .1), 1.);
-          // gl_PointSize = ${devicePixelRatio} * 5.;
-          gl_PointSize = 2.;
-          
-          position.x /= aspectRatio;
-          velocity *= sign(1. - abs(position));
-          
           vPosition = position;
-          vVelocity = velocity;
+          gl_Position = vec4(position, 1.);
         `]
       ],
       fragmentShaderChunks: [
         ["start", `
           precision highp float;
 
-          in vec3 vVelocity;
+          uniform sampler2D sandDepthTexture;
+
           in vec3 vPosition;
+
+          ${DepthShader.bumpFromDepth()}
         `],
         ["end", `
-          if(length(gl_PointCoord * 2. - 1.) > 1.) {
-            discard;
-          }
-          vec3 color = mix(vec3(1., 1., 0.), vec3(1., 0., 1.), step(.33, vPosition.z));
-          color = mix(color, vec3(0., 1., 1.), step(.66, vPosition.z));
-          // color *= .5 + vPosition.z * .5;
-          color += length(vVelocity * 100.);
+          vec2 uv = vPosition.xy * .5 + .5;
+          // fragColor = texture(sandDepthTexture, uv);
+          vec4 bump = bumpFromDepth(sandDepthTexture, uv, vec2(1024.), 1.);
+
+          vec3 color = vec3(1., .5, .5);
+          color += max(0., dot(vec3(1.), bump.xyz)) * .2;
+
+          // color = bump.xyz;
+
           fragColor = vec4(color, 1.);
-          gl_FragDepth = 1. - vPosition.z;
         `]
       ]
     });
 
-    this.mesh = new GLMesh({
-      gl: this.gl,
-      attributes: [
-        ["position", new GLVertexAttribute({
-            gl: this.gl,
-            size: 3,
-            stride: 24
-          })
-        ],
-        ["velocity", new GLVertexAttribute({
-            gl: this.gl,
-            size: 3,
-            stride: 24,
-            offset: 12
-          })
-        ]
-      ]
+    this.planeVao = new GLVertexArray({
+      gl: this.gl, 
+      mesh: this.plane,
+      program: this.program
     });
-
-    const data = new Float32Array(GRAINS * 6);
-    for (let index = 0; index < GRAINS * 2; index++) {
-      data[index * 6] = (Math.random() * 2 - 1) * this.camera.aspectRatio;
-      data[index * 6 + 1] = (Math.random() * 2 - 1);
-      data[index * 6 + 2] = Math.random();
-    }
-
-    this.transformFeedbackBuffer1 = new GLBuffer({
-      gl: this.gl,
-      data: data,
-      usage: this.gl.DYNAMIC_COPY
-    });
-
-    this.transformFeedbackBuffer2 = new GLBuffer({
-      gl: this.gl,
-      data: data,
-      usage: this.gl.DYNAMIC_COPY
-    });
-
-    this.transformFeedback = this.gl.createTransformFeedback();
-    this.gl.bindTransformFeedback(this.gl.TRANSFORM_FEEDBACK, this.transformFeedback);
+    this.planeVao.bind();
+    this.depthFrameBuffer.colorTextures[0].bind();    
+    this.planeVao.unbind();
   }
 
   resize(width, height) {
     this.camera.aspectRatio = width / height;
 
-    this.program.use();
-    this.program.uniforms.set("aspectRatio", this.camera.aspectRatio);
-
     this.update();
   }
- 
+
   update() {
-    this.gl.viewport(0, 0, this.gl.drawingBufferWidth, this.gl.drawingBufferHeight);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT | this.gl.DEPTH_BUFFER_BIT);
 
     this.cameraController.update();
+
+    this.depthFrameBuffer.bind();
+    this.gl.viewport(0, 0, DEPTH_FRAME_BUFFER_SIZE, DEPTH_FRAME_BUFFER_SIZE);
+    this.gl.clear(this.gl.COLOR_BUFFER_BIT | this.gl.DEPTH_BUFFER_BIT);
+    this.sandLayer.draw({
+      camera: this.camera,
+      pointer: this.pointer
+    });
+    this.depthFrameBuffer.unbind();
     
+    this.gl.viewport(0, 0, this.gl.drawingBufferWidth, this.gl.drawingBufferHeight);
     this.program.use();
-    this.program.uniforms.set("projectionView", this.camera.projectionView);
-    this.program.uniforms.set("pointer", [
-      this.pointer.normalizedCenteredFlippedY.x, 
-      this.pointer.normalizedCenteredFlippedY.y, 
-      this.pointer.velocity.x, 
-      -this.pointer.velocity.y
-    ]);
-    
-    this.mesh.attributes.get("position").buffer = this.transformFeedbackBuffer1;    
-    this.mesh.attributes.get("velocity").buffer = this.transformFeedbackBuffer1;    
-    this.program.attributes.set(this.mesh.attributes);
-
-    this.transformFeedbackBuffer2.bind({
-      target: this.gl.TRANSFORM_FEEDBACK_BUFFER,
-      index: 0
+    this.planeVao.bind();
+    this.plane.attributes.get("position").buffer.bind();
+    this.plane.draw({
+      mode: this.gl.TRIANGLE_STRIP
     });
-    
-    this.gl.beginTransformFeedback(this.gl.POINTS);
-    this.mesh.draw({
-      mode: this.gl.POINTS,
-      count: GRAINS
-    });
-    this.gl.endTransformFeedback();
-    
-    this.transformFeedbackBuffer2.unbind({
-      target: this.gl.TRANSFORM_FEEDBACK_BUFFER,
-      index: 0
-    });
-
-    [this.transformFeedbackBuffer1, this.transformFeedbackBuffer2] = [this.transformFeedbackBuffer2, this.transformFeedbackBuffer1];
   }
 }
