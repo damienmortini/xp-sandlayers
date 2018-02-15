@@ -22,7 +22,6 @@ export default class SandLayer {
           uniform mat4 projectionView;
           uniform mat4 transform;
           uniform vec4 pointer;
-          uniform float aspectRatio;
 
           in vec3 position;
           in vec3 velocity;
@@ -35,21 +34,17 @@ export default class SandLayer {
           vec3 velocity = velocity;
           vec4 pointer = pointer;
 
-          // position.x *= aspectRatio;
-          // pointer.x *= aspectRatio;
-          
           velocity.xy += pointer.zw * .002 * (.2 + position.z * .8) * smoothstep(0., 1., .3 - distance(position.xy, pointer.xy));
           velocity *= .95;
           
           position += velocity;
           position *= sign(1. - abs(position));
           
-          gl_Position = projectionView * transform * vec4(vec3(position.xy, position.z * .1), 1.);
+          // gl_Position = projectionView * transform * vec4(vec3(position.xy, position.z * .1), 1.);
           gl_Position = vec4(vec3(position.xy, position.z * .1), 1.);
           // gl_PointSize = ${devicePixelRatio} * 1.;
           gl_PointSize = 2.;
           
-          // position.x /= aspectRatio;
           // velocity *= sign(1. - abs(position));
           
           vPosition = position;
@@ -73,7 +68,7 @@ export default class SandLayer {
           // color += length(vVelocity * 100.);
           // fragColor = vec4(color, 1.);
           // gl_FragDepth = 1. - vPosition.z;
-          fragColor = vec4(.003);
+          fragColor = vec4(.01);
         `]
       ]
     });
@@ -133,13 +128,11 @@ export default class SandLayer {
     });
   }
 
-  draw({ camera, pointer }) {
+  draw({ pointer }) {
     this.gl.enable(this.gl.BLEND);
     this.gl.blendFunc(this.gl.ONE, this.gl.ONE);
 
     this.program.use();
-    this.program.uniforms.set("projectionView", camera.projectionView);
-    this.program.uniforms.set("aspectRatio", camera.aspectRatio);
     this.program.uniforms.set("pointer", [
       pointer.normalizedCenteredFlippedY.x,
       pointer.normalizedCenteredFlippedY.y,
