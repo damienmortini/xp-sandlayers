@@ -3697,7 +3697,7 @@ class Shader {
     for (let [key, chunk] of chunks) {
       switch (key) {
         case "start":
-          string = string.replace(/(#version .*?)\n([\s\S]*)/, `$1\n${chunk}\n$2`);
+          string = string.replace(/(#version .*?\n(\s*precision highp float;\s)?)([\s\S]*)/, `$1\n${chunk}\n$3`);
           break;
         case "end":
           string = string.replace(/(}\s*$)/, `\n${chunk}\n$1`);
@@ -3735,7 +3735,7 @@ class Shader {
     this._fragmentShaderChunks = [];
 
     this.add({vertexShaderChunks, fragmentShaderChunks, uniforms});
-
+    
     for (let shader of shaders) {
       this.add(shader);
     }
@@ -3858,19 +3858,19 @@ class Shader {
 class GLTexture {
   constructor({
     gl, 
-    data = null, 
+    data = undefined, 
     width = undefined,
     height = undefined,
     target = (data && data.length) ? gl.TEXTURE_CUBE_MAP : gl.TEXTURE_2D,
     level = 0,
-    internalformat = gl.RGBA,
+    internalFormat = gl.RGBA8 || gl.RGBA,
     format = gl.RGBA,
     type = gl.UNSIGNED_BYTE,
     minFilter = gl.NEAREST_MIPMAP_LINEAR, 
     magFilter = gl.LINEAR, 
     wrapS = gl.REPEAT, 
     wrapT = gl.REPEAT
-  } = {}) {
+  } = {gl}) {
     this.gl = gl;
     this._texture = this.gl.createTexture();
     this._width = width;
@@ -3880,7 +3880,7 @@ class GLTexture {
     this._target = target;
     
     this.level = level;
-    this.internalformat = internalformat;
+    this.internalFormat = internalFormat;
     this.format = format;
     this.type = type;
     this.minFilter = minFilter;
@@ -3916,9 +3916,9 @@ class GLTexture {
     this.bind();
     for (let i = 0; i < data.length; i++) {
       if(this.gl.getParameter(this.gl.VERSION).startsWith("WebGL 1.0") && this._dataWidth) {
-        this.gl.texImage2D(target + i, this.level, this.internalformat, this.format, this.type, data[i]);
+        this.gl.texImage2D(target + i, this.level, this.internalFormat, this.format, this.type, data[i]);
       } else {
-        this.gl.texImage2D(target + i, this.level, this.internalformat, this.width, this.height, 0, this.format, this.type, data[i]);
+        this.gl.texImage2D(target + i, this.level, this.internalFormat, this.width, this.height, 0, this.format, this.type, data[i]);
       }
     }
     this.unbind();
@@ -4003,7 +4003,7 @@ class GLTexture {
   }
 
   bind({unit = 0} = {}) {
-    this.gl.activeTexture(this.gl[`TEXTURE${unit}`]);
+    this.gl.activeTexture(this.gl.TEXTURE0 + unit);
     this.gl.bindTexture(this._target, this._texture);
   }
 
@@ -4014,7 +4014,7 @@ class GLTexture {
 
 class GLProgram extends Shader {
   constructor({
-    gl = undefined,
+    gl,
     vertexShader = undefined,
     fragmentShader = undefined,
     uniforms = undefined,
@@ -4023,8 +4023,8 @@ class GLProgram extends Shader {
     vertexShaderChunks = undefined,
     fragmentShaderChunks = undefined,
     shaders = undefined
-  } = {}) {
-    super({vertexShader, fragmentShader, uniforms, vertexShaderChunks, fragmentShaderChunks, shaders});
+  } = { gl }) {
+    super({ vertexShader, fragmentShader, uniforms, vertexShaderChunks, fragmentShaderChunks, shaders });
 
     this.gl = gl;
     this._program = gl.createProgram();
@@ -4032,27 +4032,26 @@ class GLProgram extends Shader {
 
     const self = this;
 
-    this._vertexAttribDivisor = function() {};
+    this._vertexAttribDivisor = function () { };
     const instancedArraysExtension = this.gl.getExtension("ANGLE_instanced_arrays");
-    if(instancedArraysExtension) {
+    if (instancedArraysExtension) {
       this._vertexAttribDivisor = instancedArraysExtension.vertexAttribDivisorANGLE.bind(instancedArraysExtension);
-    } else if(this.gl.vertexAttribDivisor) {
+    } else if (this.gl.vertexAttribDivisor) {
       this._vertexAttribDivisor = this.gl.vertexAttribDivisor.bind(this.gl);
     }
 
-    this._attributesLocations = new Map();
     class Attributes extends Map {
-      set (name , {buffer, location = self._attributesLocations.get(name), size, type = gl.FLOAT, normalized = false, stride = 0, offset = 0, divisor = 0} = {}) {
-        if(name instanceof Map) {
+      set(name, { buffer, location = self._attributesLocations.get(name), size, type = gl.FLOAT, normalized = false, stride = 0, offset = 0, divisor = 0 } = {}) {
+        if (name instanceof Map) {
           for (let [key, value] of name) {
             this.set(key, value);
           }
           return;
         }
         buffer.bind();
-        if(location === undefined) {
+        if (location === undefined) {
           location = gl.getAttribLocation(self._program, name);
-          if(location === -1) {
+          if (location === -1) {
             console.warn(`Attribute "${name}" is missing or never used`);
           }
           self._attributesLocations.set(name, location);
@@ -4061,40 +4060,53 @@ class GLProgram extends Shader {
         gl.vertexAttribPointer(location, size, type, normalized, stride, offset);
         buffer.unbind();
         self._vertexAttribDivisor(location, divisor);
-        super.set(name, {buffer, size, type, normalized, stride, offset});
+        super.set(name, { buffer, size, type, normalized, stride, offset });
       }
     }
 
-    this._uniformLocations = new Map();
     class Uniforms extends Map {
-      set (name, ...values) {
+      set(name, ...values) {
         let value = values[0];
-        if(value === undefined) {
+        if (value === undefined) {
           return;
         }
-        
+
         let location = self._uniformLocations.get(name);
-        if(location === undefined) {
+        if (location === undefined) {
           location = gl.getUniformLocation(self._program, name);
           self._uniformLocations.set(name, location);
         }
-        
-        if(value.length === undefined) {
-          if(value instanceof Object) {
+
+        let texture;
+
+        if (value.length === undefined) {
+          if (value instanceof GLTexture) {
+            let unit = 0;
+            for (const [uniformName, type] of self.uniformTypes) {
+              if(type.startsWith("sampler")) {
+                if(uniformName === name) {
+                  texture = value;
+                  values = [unit];
+                  break;
+                }
+                unit++;
+              }
+            }
+          } else if (value instanceof Object) {
             for (let key in value) {
               self.uniforms.set(`${name}.${key}`, value[key]);
             }
             return;
           }
-          if(values.length > 1) {
+          if (values.length > 1) {
             value = self.uniforms.get(name);
             value.set(...values);
           } else {
             value = values;
           }
-        } else if(value[0] instanceof Object) {
+        } else if (value[0] instanceof Object) {
           for (let i = 0; i < value.length; i++) {
-            if(value[0].length) {
+            if (value[0].length) {
               self.uniforms.set(`${name}[${i}]`, value[i]);
             } else {
               for (let key in value[i]) {
@@ -4104,14 +4116,14 @@ class GLProgram extends Shader {
           }
           return;
         }
-        
-        if(location === null) {
+
+        if (location === null) {
           return;
         }
 
         const type = self.uniformTypes.get(name);
 
-        if(type === "float") {
+        if (type === "float") {
           gl.uniform1fv(location, value);
         } else if (type === "vec2") {
           gl.uniform2fv(location, value);
@@ -4119,7 +4131,7 @@ class GLProgram extends Shader {
           gl.uniform3fv(location, value);
         } else if (type === "vec4") {
           gl.uniform4fv(location, value);
-        } else if (type === "int" || type === "sampler2D" || type === "samplerCube") {
+        } else if (type === "int" || type.startsWith("sampler")) {
           gl.uniform1iv(location, value);
         } else if (type === "ivec2") {
           gl.uniform2iv(location, value);
@@ -4133,11 +4145,11 @@ class GLProgram extends Shader {
           gl.uniformMatrix4fv(location, false, value);
         }
 
-        super.set(name, value);
+        super.set(name, texture || value);
       }
     }
 
-    if(transformFeedbackVaryings) {
+    if (transformFeedbackVaryings) {
       this.gl.transformFeedbackVaryings(this._program, transformFeedbackVaryings, gl.INTERLEAVED_ATTRIBS);
     }
 
@@ -4147,7 +4159,7 @@ class GLProgram extends Shader {
     this.use();
 
     this.attributes = new Attributes();
-    
+
     const rawUniforms = this.uniforms;
     this.uniforms = new Uniforms();
     for (const [key, value] of rawUniforms) {
@@ -4157,7 +4169,7 @@ class GLProgram extends Shader {
 
   set vertexShader(value) {
     super.vertexShader = value;
-    if(this.gl) {
+    if (this.gl) {
       this._updateShader(this.gl.VERTEX_SHADER, this.vertexShader);
     }
   }
@@ -4168,7 +4180,7 @@ class GLProgram extends Shader {
 
   set fragmentShader(value) {
     super.fragmentShader = value;
-    if(this.gl) {
+    if (this.gl) {
       this._updateShader(this.gl.FRAGMENT_SHADER, this.fragmentShader);
     }
   }
@@ -4176,26 +4188,26 @@ class GLProgram extends Shader {
   get fragmentShader() {
     return super.fragmentShader;
   }
-  
+
   use() {
     this.gl.useProgram(this._program);
   }
 
   _updateShader(type, source) {
-    if(!source) {
+    if (!source) {
       return;
     }
 
-    if(this.gl.getParameter(this.gl.VERSION).startsWith("WebGL 1.0")) {
+    if (this.gl.getParameter(this.gl.VERSION).startsWith("WebGL 1.0")) {
       source = source.replace(/#version.*?\n/g, "");
       source = source.replace(/\btexture\b/g, "texture2D");
-      if(type === this.gl.VERTEX_SHADER) {
+      if (type === this.gl.VERTEX_SHADER) {
         source = source.replace(/\bin\b/g, "attribute");
         source = source.replace(/\bout\b/g, "varying");
       } else {
         source = source.replace(/\bin\b/g, "varying");
         const results = /out vec4 (.*?);/.exec(source);
-        if(results) {
+        if (results) {
           const fragColorName = results[1];
           source = source.replace(/out.*?;/, "");
           source = source.replace(new RegExp(`\\b${fragColorName}\\b`, "g"), "gl_FragColor");
@@ -4213,18 +4225,18 @@ class GLProgram extends Shader {
       if (lineNumberResults) {
         const lineNumber = parseFloat(lineNumberResults[1]);
         const shaderLines = source.split("\n");
-        console.error(`${shaderInfoLog}\nat: ${shaderLines[lineNumber - 1].replace(/^\s*/, "")}`);
+        throw new Error(`${shaderInfoLog}\nat: ${shaderLines[lineNumber - 1].replace(/^\s*/, "")}`);
       } else {
-        console.error(shaderInfoLog);
+        throw new Error(shaderInfoLog);
       }
       this.gl.deleteShader(shader);
       return;
-    } else if(shaderInfoLog) {
+    } else if (shaderInfoLog) {
       console.warn(shaderInfoLog);
     }
 
     const attachedShader = this._attachedShaders.get(type);
-    if(attachedShader) {
+    if (attachedShader) {
       this.gl.detachShader(this._program, attachedShader);
       this.gl.deleteShader(attachedShader);
     }
@@ -4232,18 +4244,18 @@ class GLProgram extends Shader {
     this.gl.attachShader(this._program, shader);
     this.gl.deleteShader(shader);
     this._attachedShaders.set(type, shader);
-    
-    if(this._attachedShaders.size === 2) {
+
+    if (this._attachedShaders.size === 2) {
       this.gl.linkProgram(this._program);
       const programInfoLog = this.gl.getProgramInfoLog(this._program);
       if (!this.gl.getProgramParameter(this._program, this.gl.LINK_STATUS)) {
-        console.error(programInfoLog);
-      } else if(programInfoLog) {
+        throw new Error(programInfoLog);
+      } else if (programInfoLog) {
         console.warn(programInfoLog);
       }
 
       // TODO: Check when issue is resolved on Safari and comment out
-      
+
       // for (let [type, attachedShader] of this._attachedShaders) {
       //   this.gl.detachShader(this._program, attachedShader);
       //   this.gl.deleteShader(attachedShader);
@@ -4261,26 +4273,25 @@ class GLProgram extends Shader {
       Vector3,
       Vector4,
       Matrix3,
-      Matrix4,
-      GLTexture
+      Matrix4
     });
   }
 }
 
 class GLBuffer {
   constructor({
-    gl = undefined,
-    data = undefined,
+    gl,
+    data = null,
     target = gl.ARRAY_BUFFER,
     usage = gl.STATIC_DRAW
-  } = {}) {
+  } = { gl }) {
     this.gl = gl;
     this.target = target;
     this.usage = usage;
 
     this._buffer = this.gl.createBuffer();
-    
-    if(data) {
+
+    if (data) {
       this.data = data;
     }
   }
@@ -4303,7 +4314,7 @@ class GLBuffer {
     offset = 0,
     size = undefined
   } = {}) {
-    if(index === undefined) {
+    if (index === undefined) {
       this.gl.bindBuffer(target, this._buffer);
     } else if (size === undefined) {
       this.gl.bindBufferBase(target, index, this._buffer);
@@ -4318,7 +4329,7 @@ class GLBuffer {
     offset = 0,
     size = undefined
   } = {}) {
-    if(index === undefined) {
+    if (index === undefined) {
       this.gl.bindBuffer(target, null);
     } else if (size === undefined) {
       this.gl.bindBufferBase(target, index, null);
@@ -4330,133 +4341,129 @@ class GLBuffer {
 
 class GLVertexAttribute {
   constructor({
-    gl = undefined,
+    gl,
     data = undefined,
     buffer = new GLBuffer({
       gl
     }),
     size = 1,
+    type = undefined,
     offset = 0,
-    normalized = false, 
-    stride = 0, 
+    normalized = false,
+    stride = 0,
+    count = undefined,
     divisor = 0
-  } = {}) {
-    this.count = undefined;
-    this.type = undefined;
-    
+  } = { gl }) {
     this.gl = gl;
     this.buffer = buffer;
     this.size = size;
+    this.type = type;
     this.offset = offset;
     this.normalized = normalized;
     this.stride = stride;
+    this.count = count;
     this.divisor = divisor;
 
-    if(data) {
+    if (data) {
       this.data = data;
     }
   }
 
-  set size(value) {
-    this._size = value;
-    this._update();
+  set count(value) {
+    this._count = value;
   }
 
-  get size() {
-    return this._size;
+  get count() {
+    return this._count === undefined ? this.data.length / this.size : this._count;
+  }
+
+  set type(value) {
+    this._type = value;
+  }
+
+  get type() {
+    let type = this._type;
+    if (!type) {
+      if (this.data instanceof Float32Array || this.data instanceof Float64Array) {
+        type = this.gl.FLOAT;
+      } else if (this.data instanceof Uint8Array) {
+        type = this.gl.UNSIGNED_BYTE;
+      } else if (this.data instanceof Uint16Array) {
+        type = this.gl.UNSIGNED_SHORT;
+      } else if (this.data instanceof Uint32Array) {
+        type = this.gl.UNSIGNED_INT;
+      }
+    }
+    return type;
   }
 
   set data(value) {
     this.buffer.data = value;
-    this._update();
   }
 
   get data() {
     return this.buffer.data;
   }
-
-  set buffer(value) {
-    this._buffer = value;
-    this._update();
-  }
-
-  get buffer() {
-    return this._buffer;
-  }
-
-  _update() {
-    if(!this.data) {
-      return;
-    }
-
-    // Compute count
-    this.count = this.data.length / this.size;
-
-    // Type detection
-    if(this.data instanceof Float32Array || this.data instanceof Float64Array) {
-      this.type = this.gl.FLOAT;
-    } else if(this.data instanceof Uint8Array) {
-      this.type = this.gl.UNSIGNED_BYTE;
-    } else if(this.data instanceof Uint16Array) {
-      this.type = this.gl.UNSIGNED_SHORT;
-    } else if (this.data instanceof Uint32Array) {
-      this.type = this.gl.UNSIGNED_INT;
-    }
-  }
 }
 
 class GLMesh {
   constructor({
-    gl = undefined, 
-    attributes = undefined, 
-    indiceData = undefined
-  } = {}) {
+    gl,
+    attributes = undefined,
+    indices = undefined
+  } = { gl }) {
     this.gl = gl;
 
     this.gl.getExtension("OES_element_index_uint");
 
-    this._drawElementsInstanced = function() {};
-    this._drawArraysInstanced = function() {};
+    this._drawElementsInstanced = function () { };
+    this._drawArraysInstanced = function () { };
     const instancedArraysExtension = this.gl.getExtension("ANGLE_instanced_arrays");
-    if(instancedArraysExtension) {
+    if (instancedArraysExtension) {
       this._drawElementsInstanced = instancedArraysExtension.drawElementsInstancedANGLE.bind(instancedArraysExtension);
       this._drawArraysInstanced = instancedArraysExtension.drawArraysInstancedANGLE.bind(instancedArraysExtension);
-    } else if(this.gl.drawElementsInstanced) {
+    } else if (this.gl.drawElementsInstanced) {
       this._drawElementsInstanced = this.gl.drawElementsInstanced.bind(this.gl);
       this._drawArraysInstanced = this.gl.drawArraysInstanced.bind(this.gl);
     }
-
-    this.attributes = new Map(attributes);
     
-    if(indiceData) {
-      this.indices = new GLVertexAttribute({
+    this.attributes = new Map(attributes);
+    for (const [key, value] of this.attributes) {
+      if(!(value instanceof GLVertexAttribute)) {
+        this.attributes.set(key, new GLVertexAttribute(Object.assign({
+          gl
+        }, value)));
+      }
+    }
+
+    if (indices && !(this.indices instanceof GLVertexAttribute)) {
+      this.indices = new GLVertexAttribute(Object.assign({
         gl: this.gl,
         buffer: new GLBuffer({
           gl: this.gl,
-          data: indiceData,
           target: this.gl.ELEMENT_ARRAY_BUFFER
         })
-      });
+      }, indices.length !== undefined ? {data: indices} : indices));
     }
   }
 
-  draw ({
-    mode = this.gl.TRIANGLES, 
+  draw({
+    mode = this.gl.TRIANGLES,
     elements = !!this.indices,
-    count = elements ? this.indices.count : this.attributes.get("position").count, 
+    count = elements ? this.indices.count : this.attributes.get("position").count,
     offset = this.indices ? this.indices.offset : 0,
     type = elements ? this.indices.type : null,
     first = 0,
     instanceCount = undefined
   } = {}) {
-    if(elements) {
-      if(instanceCount !== undefined) {
+    if (elements) {
+      if (instanceCount !== undefined) {
         this._drawElementsInstanced(mode, count, type, offset, instanceCount);
       } else {
         this.gl.drawElements(mode, count, type, offset);
       }
     } else {
-      if(instanceCount !== undefined) {
+      if (instanceCount !== undefined) {
         this._drawArraysInstanced(mode, first, count, instanceCount);
       } else {
         this.gl.drawArrays(mode, first, count);
@@ -5503,6 +5510,188 @@ class TrackballController {
   }
 }
 
+class GLVertexArray {
+  constructor({
+    gl,
+    mesh = undefined,
+    program = undefined
+  } = { gl }) {
+    this.gl = gl;
+
+    const extension = gl.getExtension("OES_vertex_array_object");
+    if (extension) {
+      this.gl.createVertexArray = extension.createVertexArrayOES.bind(extension);
+      this.gl.bindVertexArray = extension.bindVertexArrayOES.bind(extension);
+    }
+
+    this._vertexArray = this.gl.createVertexArray();
+
+    if (mesh || program) {
+      this.add({
+        mesh,
+        program
+      });
+    }
+  }
+
+  add({
+    mesh = undefined,
+    program = undefined
+  } = {}) {
+    this.bind();
+    program.attributes.set(mesh.attributes);
+    if (mesh.indices) {
+      mesh.indices.buffer.bind();
+    }
+    this.unbind();
+  }
+
+  bind() {
+    this.gl.bindVertexArray(this._vertexArray);
+  }
+
+  unbind() {
+    this.gl.bindVertexArray(null);
+  }
+}
+
+class GLFrameBuffer {
+  constructor({
+    gl, 
+    target = gl.FRAMEBUFFER,
+  }) {
+    this.gl = gl;
+    this.target = target;
+
+    this.colorTextures = [];
+    this.depthTexture = null;
+    this.stencilTexture = null;
+
+    this._frameBuffer = this.gl.createFramebuffer();
+  }
+
+  attach({
+    texture,
+    attachment = this.gl.COLOR_ATTACHMENT0,
+    target = this.target,
+    textarget = this.gl.TEXTURE_2D,
+  }) {
+    this.bind({target});
+    if(attachment === this.gl.DEPTH_ATTACHMENT) {
+      this.depthTexture = texture;
+    } else if(attachment === this.gl.STENCIL_ATTACHMENT) {
+      this.stencilTexture = texture;
+    } else {
+      this.colorTextures[attachment - this.gl.COLOR_ATTACHMENT0] = texture;
+    }
+    this.gl.framebufferTexture2D(target, attachment, textarget, texture._texture || texture, 0);
+    this.unbind({target});
+  }
+
+  bind({
+    target = this.target
+  } = {}) {
+    this.gl.bindFramebuffer(target, this._frameBuffer);
+  }
+
+  unbind({
+    target = this.target
+  } = {}) {
+    this.gl.bindFramebuffer(target, null);
+  }
+}
+
+class PlaneMesh {
+  constructor({
+    width = 1, 
+    height = 1, 
+    columns = 1, 
+    rows = 1,
+    positions = undefined,
+    normals = undefined,
+    uvs = undefined,
+    indices = undefined
+  } = {}) {
+    let xSegments = columns + 1;
+    let ySegments = rows + 1;
+
+    let verticesNumber = xSegments * ySegments;
+    
+    this.positions = positions === undefined ? new Float32Array(verticesNumber * 3) : positions;
+    this.normals = normals === undefined ? new Float32Array(verticesNumber * 3) : normals;
+    this.uvs = uvs === undefined ? new Float32Array(verticesNumber * 2) : uvs;
+    this.indices = indices === undefined ? new Uint16Array(columns * rows * 6) : indices;
+
+    this.attributes = new Map();
+
+    if(this.positions) {
+      this.attributes.set("position", {
+        data: this.positions,
+        size: 3
+      });
+    }
+    
+    if(this.normals) {
+      this.attributes.set("normal", {
+        data: this.normals,
+        size: 3
+      });
+    }
+    
+    if(this.uvs) {
+      this.attributes.set("uv", {
+        data: this.uvs,
+        size: 2
+      });
+    }
+
+    for (let j = 0; j < ySegments; j++) {
+      let v = 1 - j / rows;
+      let y = j / rows * height - height * .5;
+
+      for (let i = 0; i < xSegments; i++) {
+        let u = i / columns;
+
+        let offset = j * xSegments + i;
+
+        if(this.positions) {
+          this.positions[offset * 3] = u * width - width * .5;
+          this.positions[offset * 3 + 1] = y;
+        }
+
+        if(this.normals) {
+          this.normals[offset * 3 + 2] = 1;
+        }
+
+        if(this.uvs) {
+          this.uvs[offset * 2] = u;
+          this.uvs[offset * 2 + 1] = 1 - v;
+        }
+      }
+    }
+
+    if(this.indices) {
+      for (let j = 0; j < rows; j++) {
+        for (let i = 0; i < columns; i++) {
+          var a = i + xSegments * j;
+          var b = i + xSegments * (j + 1);
+          var c = (i + 1) + xSegments * (j + 1);
+          var d = (i + 1) + xSegments * j;
+  
+          let offset = j * rows + i;
+  
+          this.indices[offset * 6] = a;
+          this.indices[offset * 6 + 1] = d;
+          this.indices[offset * 6 + 2] = b;
+          this.indices[offset * 6 + 3] = b;
+          this.indices[offset * 6 + 4] = d;
+          this.indices[offset * 6 + 5] = c;
+        }
+      }
+    }
+  }
+}
+
 const QUEUES = new Map();
 
 class WebSocket extends window.WebSocket {
@@ -6275,38 +6464,198 @@ class GUI extends HTMLElement {
 
 window.customElements.define("dlib-gui", GUI);
 
-const GRAINS = 500000;
+class DepthShader {
+  static pack() {
+    return `
+      vec4 pack (float depth) {
+        const vec4 bitSh = vec4(256 * 256 * 256, 256 * 256, 256, 1.0);
+        const vec4 bitMsk = vec4(0, 1.0 / 256.0, 1.0 / 256.0, 1.0 / 256.0);
+        vec4 comp = fract(depth * bitSh);
+        comp -= comp.xxyz * bitMsk;
+        return comp;
+      }
+    `;
+  }
 
-class View {
-  constructor({canvas} = {canvas}) {
-    this.canvas = canvas;
+  static unpack() {
+    return `
+      float unpack (vec4 packedDepth) {
+        const vec4 bitShifts = vec4(1.0 / (256.0 * 256.0 * 256.0), 1.0 / (256.0 * 256.0), 1.0 / 256.0, 1);
+        return dot(packedDepth, bitShifts);
+      }
+    `;
+  }
 
-    const webGLOptions = {
-      depth: true,
-      alpha: false,
-      // antialias: true
-    };
+  static bumpFromDepth ({
+    getDepth = "return texture(depthTexture, uv).r;"
+  } = {}) {
+    return `
+      float getDepth(sampler2D depthTexture, vec2 uv) {
+        ${getDepth}
+      }
+    
+      vec4 bumpFromDepth(sampler2D depthTexture, vec2 uv, vec2 resolution, float scale) {
+        vec2 step = 1. / resolution;
+          
+        float height = getDepth(depthTexture, uv);
+          
+        vec2 dxy = height - vec2(
+            getDepth(depthTexture, uv + vec2(step.x, 0.)), 
+            getDepth(depthTexture, uv + vec2(0., step.y))
+        );
+          
+        return vec4(normalize(vec3(dxy * scale / step, 1.)), height);
+      }
+    `;
+  }
+}
 
-    this.pointer = Pointer.get(this.canvas);
+class GLObject {
+  constructor({
+    gl,
+    mesh = new GLMesh(),
+    program = new GLProgram(),
+    vertexArray = new GLVertexArray({
+      gl, 
+      mesh,
+      program
+    })
+  } = { gl }) {
+    this.gl = gl;
+    this.mesh = mesh;
+    this.program = program;
+    this.vertexArray = vertexArray;
+    
+    this._boundTextures = new Set();
+  }
 
-    if(!/\bforcewebgl1\b/.test(window.location.search)) {
-      this.gl = this.canvas.getContext("webgl2", webGLOptions);
+  draw() {
+    this.program.use();
+    this.vertexArray.bind();
+    let unit = 0;
+    for (const [name, type] of this.program.uniformTypes) {
+      if(type.startsWith("sampler")) {
+        const value = this.program.uniforms.get(name);
+        if(value instanceof GLTexture) {
+          value.bind({
+            unit
+          });
+          this._boundTextures.add(value);
+        }
+        unit++;
+      }
     }
-    if(!this.gl) {
-      this.gl = this.canvas.getContext("webgl", webGLOptions) || this.canvas.getContext("experimental-webgl", webGLOptions);
+    this.mesh.draw();
+    this.vertexArray.unbind();
+    for (const texture of this._boundTextures) {
+      texture.unbind();
     }
+  }
+}
 
-    this.camera = new Camera();
+class BasicShader {
+  constructor({
+    positions = true,
+    normals = true,
+    uvs = true
+  }) {
+    this._positions = !!positions;
+    this._normals = !!normals;
+    this._uvs = !!uvs;
+  }
 
-    this.cameraController = new TrackballController({
-      matrix: this.camera.transform,
-      distance: Math.sqrt(3),
-      enabled: false
+  get vertexShaderChunks() {
+    return [
+      ["start", `
+      uniform mat4 projectionView;
+      uniform mat4 transform;
+
+      ${this._positions ? "in vec3 position;\n" : ""}${this._normals ? "in vec3 normal;\n" : ""}${this._uvs ? "in vec2 uv;\n" : ""}
+
+      ${this._positions ? "out vec3 vPosition;\n" : ""}${this._normals ? "out vec3 vNormal;\n" : ""}${this._uvs ? "out vec2 vUv;\n" : ""}
+      `
+      ],
+      ["main", `
+      ${this._positions ? "vPosition = position;\n" : ""}${this._normals ? "vNormal = normal;\n" : ""}${this._uvs ? "vUv = uv;\n" : ""}
+      `
+      ],
+      ["end", `
+      gl_Position = projectionView * transform * vec4(position, 1.);
+      `
+      ]
+    ]
+  }
+
+  get fragmentShaderChunks() {
+    return [
+      ["start", `
+      ${this._positions ? "in vec3 vPosition;\n" : ""}${this._normals ? "in vec3 vNormal;\n" : ""}${this._uvs ? "in vec2 vUv;\n" : ""}
+      `
+      ]
+    ];
+  }
+}
+
+class GLPlaneObject extends GLObject {
+  constructor({
+    gl,
+    width = 1,
+    height = 1,
+    columns = 1,
+    rows = 1,
+    positions = undefined,
+    normals = undefined,
+    uvs = undefined,
+    indices = undefined,
+    transform = new Matrix4(),
+    shaders = []
+  } = { gl }) {
+    super({
+      gl,
+      mesh: new GLMesh(Object.assign({ gl }, new PlaneMesh({
+        width,
+        height,
+        columns,
+        rows,
+        positions,
+        normals,
+        uvs,
+        indices
+      }))),
+      program: new GLProgram({
+        gl,
+        shaders: [
+          new BasicShader({
+            normal: false,
+            uv: false
+          }),
+          ...shaders
+        ]
+      })
     });
 
-    this.gl.clearColor(.8, .8, .8, 1);
-    this.gl.enable(this.gl.CULL_FACE);
-    this.gl.enable(this.gl.DEPTH_TEST);
+    this.transform = transform;
+  }
+
+  draw({ camera = undefined } = {}) {
+    this.program.use();
+    if (this.transform) {
+      this.program.uniforms.set("transform", this.transform);
+    }
+    if (camera) {
+      this.program.uniforms.set("projectionView", camera.projectionView);
+    }
+    this.vertexArray.bind();
+    this.mesh.draw();
+    this.vertexArray.unbind();
+  }
+}
+
+const GRAINS = 500000;
+
+class SandLayer {
+  constructor({ gl }) {
+    this.gl = gl;
 
     this.program = new GLProgram({
       gl: this.gl,
@@ -6319,33 +6668,34 @@ class View {
           uniform mat4 projectionView;
           uniform mat4 transform;
           uniform vec4 pointer;
-          uniform float aspectRatio;
+          uniform sampler2D frameTexture;
 
           in vec3 position;
           in vec3 velocity;
 
           out vec3 vPosition;
           out vec3 vVelocity;
+          out vec4 vTest;
         `],
         ["end", `
           vec3 position = position;
           vec3 velocity = velocity;
           vec4 pointer = pointer;
 
-          position.x *= aspectRatio;
-          pointer.x *= aspectRatio;
-          
-          velocity.xy += pointer.zw * .002 * (.2 + position.z * .8) * smoothstep(0., 1., .3 - distance(position.xy, pointer.xy));
-          velocity *= .95;
+          // velocity.xy += pointer.zw * .0001 * step(distance(position.xy, pointer.xy), .1);
+          velocity.xy += pointer.zw * .01 * smoothstep(0., 1., .2 - distance(position.xy, pointer.xy));
           
           position += velocity;
+          position *= sign(1. - abs(position));
+          position.z -= .1;
+          position.z = max(position.z, 0.);
           
-          gl_Position = projectionView * transform * vec4(vec3(position.xy, position.z * .1), 1.);
-          // gl_PointSize = ${devicePixelRatio} * 5.;
-          gl_PointSize = 2.;
+          vec3 normal = texture(frameTexture, position.xy * .5 + .5).rgb * 2. - 1.;
+          velocity = reflect(velocity, normal);
+          velocity *= 1. - max(0., dot(normalize(velocity), normal));
           
-          position.x /= aspectRatio;
-          velocity *= sign(1. - abs(position));
+          gl_Position = projectionView * transform * vec4(position, 1.);
+          gl_PointSize = 1.;
           
           vPosition = position;
           vVelocity = velocity;
@@ -6355,111 +6705,477 @@ class View {
         ["start", `
           precision highp float;
 
+          uniform sampler2D frameTexture;
+
           in vec3 vVelocity;
           in vec3 vPosition;
+          in vec4 vTest;
         `],
         ["end", `
-          if(length(gl_PointCoord * 2. - 1.) > 1.) {
-            discard;
-          }
-          vec3 color = mix(vec3(1., 1., 0.), vec3(1., 0., 1.), step(.33, vPosition.z));
-          color = mix(color, vec3(0., 1., 1.), step(.66, vPosition.z));
-          // color *= .5 + vPosition.z * .5;
-          color += length(vVelocity * 100.);
-          fragColor = vec4(color, 1.);
-          gl_FragDepth = 1. - vPosition.z;
+          fragColor.a = .02;
         `]
-      ]
-    });
-
-    this.mesh = new GLMesh({
-      gl: this.gl,
-      attributes: [
-        ["position", new GLVertexAttribute({
-            gl: this.gl,
-            size: 3,
-            stride: 24
-          })
-        ],
-        ["velocity", new GLVertexAttribute({
-            gl: this.gl,
-            size: 3,
-            stride: 24,
-            offset: 12
-          })
-        ]
       ]
     });
 
     const data = new Float32Array(GRAINS * 6);
     for (let index = 0; index < GRAINS * 2; index++) {
-      data[index * 6] = (Math.random() * 2 - 1) * this.camera.aspectRatio;
-      data[index * 6 + 1] = (Math.random() * 2 - 1);
-      data[index * 6 + 2] = Math.random();
+      data[index * 6] = Math.random() * 2 - 1;
+      data[index * 6 + 1] = Math.random() * 2 - 1;
+      // data[index * 6 + 2] = index / GRAINS;
     }
 
     this.transformFeedbackBuffer1 = new GLBuffer({
       gl: this.gl,
       data: data,
       usage: this.gl.DYNAMIC_COPY
-    });
+    });    
+    this.transformFeedbackBuffer2 = new GLBuffer(this.transformFeedbackBuffer1);
 
-    this.transformFeedbackBuffer2 = new GLBuffer({
+    this.mesh = new GLMesh({
       gl: this.gl,
-      data: data,
-      usage: this.gl.DYNAMIC_COPY
+      attributes: [
+        ["position", new GLVertexAttribute({
+          gl: this.gl,
+          size: 3,
+          buffer: this.transformFeedbackBuffer1,
+          data,
+          stride: 24
+        })
+        ],
+        ["velocity", new GLVertexAttribute({
+          gl: this.gl,
+          size: 3,
+          buffer: this.transformFeedbackBuffer1,
+          data,
+          stride: 24,
+          offset: 12
+        })
+        ]
+      ]
     });
 
     this.transformFeedback = this.gl.createTransformFeedback();
-    this.gl.bindTransformFeedback(this.gl.TRANSFORM_FEEDBACK, this.transformFeedback);
+
+    this.vao1 = new GLVertexArray({
+      gl: this.gl,
+      mesh: this.mesh,
+      program: this.program
+    });
+
+    this.mesh.attributes.get("position").buffer = this.transformFeedbackBuffer2;
+    this.mesh.attributes.get("velocity").buffer = this.transformFeedbackBuffer2;
+
+    this.vao2 = new GLVertexArray({
+      gl: this.gl,
+      mesh: this.mesh,
+      program: this.program
+    });
   }
 
-  resize(width, height) {
-    this.camera.aspectRatio = width / height;
+  draw({ pointer, frameTexture, camera }) {
+    this.gl.enable(this.gl.BLEND);
+    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
 
     this.program.use();
-    this.program.uniforms.set("aspectRatio", this.camera.aspectRatio);
-
-    this.update();
-  }
- 
-  update() {
-    this.gl.viewport(0, 0, this.gl.drawingBufferWidth, this.gl.drawingBufferHeight);
-    this.gl.clear(this.gl.COLOR_BUFFER_BIT | this.gl.DEPTH_BUFFER_BIT);
-
-    this.cameraController.update();
-    
-    this.program.use();
-    this.program.uniforms.set("projectionView", this.camera.projectionView);
+    // this.program.uniforms.set("projectionView", camera.projectionView);
     this.program.uniforms.set("pointer", [
-      this.pointer.normalizedCenteredFlippedY.x, 
-      this.pointer.normalizedCenteredFlippedY.y, 
-      this.pointer.velocity.x, 
-      -this.pointer.velocity.y
+      pointer.normalizedCenteredFlippedY.x,
+      pointer.normalizedCenteredFlippedY.y,
+      pointer.velocity.x,
+      -pointer.velocity.y
     ]);
     
-    this.mesh.attributes.get("position").buffer = this.transformFeedbackBuffer1;    
-    this.mesh.attributes.get("velocity").buffer = this.transformFeedbackBuffer1;    
-    this.program.attributes.set(this.mesh.attributes);
-
+    this.vao1.bind();
+    
+    this.gl.bindTransformFeedback(this.gl.TRANSFORM_FEEDBACK, this.transformFeedback);
     this.transformFeedbackBuffer2.bind({
       target: this.gl.TRANSFORM_FEEDBACK_BUFFER,
       index: 0
     });
-    
+    frameTexture.bind();
     this.gl.beginTransformFeedback(this.gl.POINTS);
     this.mesh.draw({
       mode: this.gl.POINTS,
       count: GRAINS
     });
     this.gl.endTransformFeedback();
-    
+    frameTexture.unbind();
     this.transformFeedbackBuffer2.unbind({
       target: this.gl.TRANSFORM_FEEDBACK_BUFFER,
       index: 0
     });
+    this.gl.bindTransformFeedback(this.gl.TRANSFORM_FEEDBACK, null);
+
+    this.vao1.unbind();
 
     [this.transformFeedbackBuffer1, this.transformFeedbackBuffer2] = [this.transformFeedbackBuffer2, this.transformFeedbackBuffer1];
+    [this.vao1, this.vao2] = [this.vao2, this.vao1];
+
+    this.gl.disable(this.gl.BLEND);
+  }
+}
+
+// From https://github.com/Jam3/glsl-fast-gaussian-blur
+
+class BlurShader {
+  constructor({
+    textureName = "blurTexture",
+    texture = 0,
+    distance = [1, 1]
+  } = {}) {
+    return {
+      uniforms: [
+        ["blurDistance", distance],
+        [textureName, texture]
+      ],
+      vertexShaderChunks: [
+        ["start", `
+          uniform vec2 blurDistance;
+          ${BlurShader.computeBlurTextureCoordinates()}
+        `],
+        ["end", `computeBlurTextureCoordinates(uv, blurDistance);`]
+      ],
+      fragmentShaderChunks: [
+        ["start", `
+          uniform sampler2D ${textureName};
+          ${BlurShader.blur()}
+        `],
+        ["end", `fragColor = blur(${textureName});`]
+      ]
+    }
+  }
+
+  static computeBlurTextureCoordinates() {
+    return `
+      out vec2 blurTextureCoordinates[15];
+
+      void computeBlurTextureCoordinates(vec2 uv, vec2 distance) {
+        blurTextureCoordinates[0] = uv + distance * -.028;
+        blurTextureCoordinates[1] = uv + distance * -.024;
+        blurTextureCoordinates[2] = uv + distance * -.020;
+        blurTextureCoordinates[3] = uv + distance * -.016;
+        blurTextureCoordinates[4] = uv + distance * -.012;
+        blurTextureCoordinates[5] = uv + distance * -.008;
+        blurTextureCoordinates[6] = uv + distance * -.004;
+        blurTextureCoordinates[7] = uv;
+        blurTextureCoordinates[8] = uv + distance * .004;
+        blurTextureCoordinates[9] = uv + distance * .008;
+        blurTextureCoordinates[10] = uv + distance * .012;
+        blurTextureCoordinates[11] = uv + distance * .016;
+        blurTextureCoordinates[12] = uv + distance * .020;
+        blurTextureCoordinates[13] = uv + distance * .024;
+        blurTextureCoordinates[14] = uv + distance * .028;
+      }
+    `
+  }
+
+  static blur() {
+    return `
+      in vec2 blurTextureCoordinates[15];
+
+      vec4 blur(sampler2D inTexture) {
+        vec4 result = vec4(0.0);
+        result += texture(inTexture, blurTextureCoordinates[0]) * 0.0044299121055113265;
+        result += texture(inTexture, blurTextureCoordinates[1]) * 0.00895781211794;
+        result += texture(inTexture, blurTextureCoordinates[2]) * 0.0215963866053;
+        result += texture(inTexture, blurTextureCoordinates[3]) * 0.0443683338718;
+        result += texture(inTexture, blurTextureCoordinates[4]) * 0.0776744219933;
+        result += texture(inTexture, blurTextureCoordinates[5]) * 0.115876621105;
+        result += texture(inTexture, blurTextureCoordinates[6]) * 0.147308056121;
+        result += texture(inTexture, blurTextureCoordinates[7]) * 0.159576912161;
+        result += texture(inTexture, blurTextureCoordinates[8]) * 0.147308056121;
+        result += texture(inTexture, blurTextureCoordinates[9]) * 0.115876621105;
+        result += texture(inTexture, blurTextureCoordinates[10]) * 0.0776744219933;
+        result += texture(inTexture, blurTextureCoordinates[11]) * 0.0443683338718;
+        result += texture(inTexture, blurTextureCoordinates[12]) * 0.0215963866053;
+        result += texture(inTexture, blurTextureCoordinates[13]) * 0.00895781211794;
+        result += texture(inTexture, blurTextureCoordinates[14]) * 0.0044299121055113265;
+        return result;
+      }
+    `
+  }
+}
+
+const DEPTH_FRAME_BUFFER_SIZE = 512;
+
+class SandLayerProcessing {
+  constructor({ gl }) {
+    this.gl = gl;
+    this.frameBuffer1 = new GLFrameBuffer({
+      gl: this.gl
+    });
+    this.frameBuffer1.attach({
+      texture: new GLTexture({
+        gl: this.gl,
+        width: DEPTH_FRAME_BUFFER_SIZE,
+        height: DEPTH_FRAME_BUFFER_SIZE,
+        minFilter: this.gl.LINEAR
+      })
+    });
+
+    this.frameBuffer2 = new GLFrameBuffer({
+      gl: this.gl
+    });
+    this.frameBuffer2.attach({
+      texture: new GLTexture(this.frameBuffer1.colorTextures[0])
+    });
+
+    this.frameBuffer3 = new GLFrameBuffer({
+      gl: this.gl
+    });
+    this.frameBuffer3.attach({
+      texture: new GLTexture(this.frameBuffer1.colorTextures[0])
+    });
+
+    this.sandLayer = new SandLayer({
+      gl: this.gl
+    });
+
+    const quad = new GLMesh(Object.assign({
+      gl
+    }, new PlaneMesh({
+      width: 2, 
+      height: 2,
+      normals: null
+    })));
+
+    this.basicPass = new GLObject({
+      gl,
+      mesh: quad,
+      program: new GLProgram({
+        gl,
+        shaders: [
+          new BasicShader({
+            normals: false
+          }),
+          {
+            uniforms: [
+              ["frameTexture", this.frameBuffer1.colorTextures[0]]
+            ],
+            fragmentShaderChunks: [
+              ["start", `
+              uniform sampler2D frameTexture;
+              `
+              ],
+              ["end", `
+                vec2 uv = vPosition.xy * .5 + .5;
+                // fragColor = texture(frameTexture, uv);
+                fragColor = texture(frameTexture, uv) * 10.;
+              `
+              ]
+            ]
+          }]
+      })
+    });
+
+    this.blurPass = new GLObject({
+      gl, 
+      mesh: quad,
+      program: new GLProgram({
+        gl,
+        shaders: [
+          new BasicShader({
+            normals: false
+          }),
+          new BlurShader({
+            texture: this.frameBuffer1.colorTextures[0]
+          })
+        ]
+      })
+    });
+
+    this.depthPass = new GLObject({
+      gl,
+      mesh: quad,
+      program: new GLProgram({
+        gl,
+        shaders: [
+          new BasicShader({
+            normals: false
+          }),
+          {
+            uniforms: [
+              ["sandDepthTexture", this.frameBuffer3.colorTextures[0]]
+            ],
+            fragmentShaderChunks: [
+              ["start", `
+              uniform sampler2D sandDepthTexture;
+    
+              ${DepthShader.bumpFromDepth({
+                getDepth: `
+                  // return texture(depthTexture, uv).r;
+                  return smoothstep(0., 1., texture(depthTexture, uv).r);
+                `
+              })}
+              `
+              ],
+              ["end", `
+              vec2 uv = vPosition.xy * .5 + .5;
+              vec4 bump = bumpFromDepth(sandDepthTexture, uv, vec2(512.), 1.);
+              
+              vec3 color = vec3(1., .5, .5);
+              color += max(0., dot(vec3(1.), bump.xyz)) * .2;
+              
+              color = bump.xyz * .5 + .5;
+              
+              fragColor = vec4(color, 1.);
+              `
+              ]
+            ]
+          }]
+      })
+    });
+  }
+
+  draw({ pointer, camera }) {
+    this.frameBuffer1.bind();
+    this.gl.viewport(0, 0, DEPTH_FRAME_BUFFER_SIZE, DEPTH_FRAME_BUFFER_SIZE);
+    this.gl.clear(this.gl.COLOR_BUFFER_BIT | this.gl.DEPTH_BUFFER_BIT);
+    this.sandLayer.draw({
+      pointer,
+      camera,
+      frameTexture: this.frameBuffer2.colorTextures[0]
+    });
+    this.frameBuffer1.unbind();
+        
+    this.frameBuffer2.bind();
+    this.blurPass.program.use();
+    this.blurPass.program.uniforms.set("blurTexture", this.frameBuffer1.colorTextures[0]);
+    this.blurPass.program.uniforms.set("blurDistance", [0, .25]);
+    this.blurPass.draw();
+    this.frameBuffer2.unbind();
+    
+    this.frameBuffer3.bind();
+    this.blurPass.program.uniforms.set("blurTexture", this.frameBuffer2.colorTextures[0]);
+    this.blurPass.program.uniforms.set("blurDistance", [.25, 0]);
+    this.blurPass.draw();
+    this.frameBuffer3.unbind();
+
+    this.frameBuffer2.bind();
+    this.depthPass.draw();
+    this.frameBuffer2.unbind();
+
+    this.gl.viewport(0, 0, this.gl.drawingBufferWidth, this.gl.drawingBufferHeight);
+    
+    this.basicPass.program.use();
+    // this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer2.colorTextures[0]);
+    this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer1.colorTextures[0]);
+    this.basicPass.draw();
+
+    // this.sandLayer.draw({
+    //   camera,
+    //   pointer,
+    //   frameTexture: this.frameBuffer2.colorTextures[0]
+    // });
+  }
+}
+
+class View {
+  constructor({ canvas } = { canvas }) {
+    this.canvas = canvas;
+
+    const webGLOptions = {
+      depth: true,
+      alpha: false,
+      // antialias: true
+    };
+
+    this.pointer = Pointer.get(this.canvas);
+
+    if (!/\bforcewebgl1\b/.test(window.location.search)) {
+      this.gl = this.canvas.getContext("webgl2", webGLOptions);
+    }
+    if (!this.gl) {
+      this.gl = this.canvas.getContext("webgl", webGLOptions) || this.canvas.getContext("experimental-webgl", webGLOptions);
+    }
+
+    this.camera = new Camera();
+    
+    this.cameraController = new TrackballController({
+      matrix: this.camera.transform,
+      distance: Math.sqrt(3),
+      // enabled: false
+    });
+
+    this.gl.clearColor(0, 0, 0, 1);
+    // this.gl.enable(this.gl.CULL_FACE);
+    // this.gl.enable(this.gl.DEPTH_TEST);
+
+    this.quad = new GLPlaneObject({
+      gl: this.gl,
+      transform: null,
+      width: 2,
+      height: 2,
+      normals: null,
+      uvs: null
+    });
+
+    this.sandLayerProcessing = new SandLayerProcessing({
+      gl: this.gl
+    });
+
+    // this.quad = new GLMesh({
+    //   gl: this.gl,
+    //   attributes: [
+    //     ["position", new GLVertexAttribute({
+    //       gl: this.gl,
+    //       data: new PlaneMesh({
+    //         width: 2,
+    //         height: 2
+    //       }).positions,
+    //       size: 3
+    //     })]
+    //   ]
+    // });
+
+    // this.program = new GLProgram({
+    //   gl: this.gl,
+    //   vertexShaderChunks: [
+    //     ["start", `
+    //       in vec3 position;
+    //       out vec3 vPosition;
+    //     `],
+    //     ["end", `
+    //       vPosition = position;
+    //       gl_Position = vec4(position, 1.);
+    //     `]
+    //   ],
+    //   fragmentShaderChunks: [
+    //     ["start", `
+    //       precision highp float;
+
+    //       uniform sampler2D frameBufferTexture;
+
+    //       in vec3 vPosition;
+    //     `],
+    //     ["end", `
+    //       vec2 uv = vPosition.xy * .5 + .5;
+    //       fragColor = texture(frameBufferTexture, uv);
+    //     `]
+    //   ]
+    // });
+  }
+
+  resize(width, height) {
+    // this.camera.aspectRatio = width / height;
+
+    this.update();
+  }
+
+  update() {
+    this.gl.viewport(0, 0, this.gl.drawingBufferWidth, this.gl.drawingBufferHeight);
+    this.gl.clear(this.gl.COLOR_BUFFER_BIT | this.gl.DEPTH_BUFFER_BIT);
+
+    this.cameraController.update();
+
+    // this.quad.draw({
+    //   // camera: this.camera
+    // });
+
+    this.sandLayerProcessing.draw({
+      pointer: this.pointer,
+      camera: this.camera
+    });
   }
 }
 
@@ -6497,11 +7213,8 @@ window.customElements.define("dnit-main", class extends LoopElement {
     let width = this.canvas.offsetWidth;
     let height = this.canvas.offsetHeight;
 
-    // this.canvas.width = width * window.devicePixelRatio;
-    // this.canvas.height = height * window.devicePixelRatio;
-
-    this.canvas.width = width;
-    this.canvas.height = height;
+    this.canvas.width = width * Math.min(window.devicePixelRatio, 2);
+    this.canvas.height = height * Math.min(window.devicePixelRatio, 2);
 
     this.view.resize(width, height);
   }
