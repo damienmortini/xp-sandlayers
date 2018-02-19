@@ -103,7 +103,7 @@ export default class View {
   }
 
   resize(width, height) {
-    this.camera.aspectRatio = width / height;
+    // this.camera.aspectRatio = width / height;
 
     this.update();
   }
@@ -119,7 +119,8 @@ export default class View {
     // });
 
     this.sandLayerProcessing.draw({
-      pointer: this.pointer
+      pointer: this.pointer,
+      camera: this.camera
     });
   }
 }

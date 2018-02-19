@@ -17,7 +17,7 @@ import GLObject from "../../node_modules/dlib/gl/GLObject.js";
 import BasicShader from "../../node_modules/dlib/shaders/BasicShader.js";
 import BlurShader from "../../node_modules/dlib/shaders/BlurShader.js";
 
-const DEPTH_FRAME_BUFFER_SIZE = 1024;
+const DEPTH_FRAME_BUFFER_SIZE = 512;
 
 export default class SandLayerProcessing {
   constructor({ gl }) {
@@ -80,7 +80,8 @@ export default class SandLayerProcessing {
               ],
               ["end", `
                 vec2 uv = vPosition.xy * .5 + .5;
-                fragColor = texture(frameTexture, uv);
+                // fragColor = texture(frameTexture, uv);
+                fragColor = texture(frameTexture, uv) * 10.;
               `
               ]
             ]
@@ -122,7 +123,10 @@ export default class SandLayerProcessing {
               uniform sampler2D sandDepthTexture;
     
               ${DepthShader.bumpFromDepth({
-                getDepth: "return texture(depthTexture, uv).a;"
+                getDepth: `
+                  // return texture(depthTexture, uv).r;
+                  return smoothstep(0., 1., texture(depthTexture, uv).r);
+                `
               })}
               `
               ],
@@ -144,12 +148,13 @@ export default class SandLayerProcessing {
     });
   }
 
-  draw({ pointer }) {
+  draw({ pointer, camera }) {
     this.frameBuffer1.bind();
     this.gl.viewport(0, 0, DEPTH_FRAME_BUFFER_SIZE, DEPTH_FRAME_BUFFER_SIZE);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT | this.gl.DEPTH_BUFFER_BIT);
     this.sandLayer.draw({
       pointer,
+      camera,
       frameTexture: this.frameBuffer2.colorTextures[0]
     });
     this.frameBuffer1.unbind();
@@ -174,10 +179,12 @@ export default class SandLayerProcessing {
     this.gl.viewport(0, 0, this.gl.drawingBufferWidth, this.gl.drawingBufferHeight);
     
     this.basicPass.program.use();
-    this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer2.colorTextures[0]);
+    // this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer2.colorTextures[0]);
+    this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer1.colorTextures[0]);
     this.basicPass.draw();
 
     // this.sandLayer.draw({
+    //   camera,
     //   pointer,
     //   frameTexture: this.frameBuffer2.colorTextures[0]
     // });
