@@ -6682,6 +6682,8 @@ class SandLayer {
           vec3 velocity = velocity;
           vec4 pointer = pointer;
 
+          velocity += .001;
+
           // velocity.xy += pointer.zw * .0001 * step(distance(position.xy, pointer.xy), .1);
           velocity.xy += pointer.zw * .01 * smoothstep(0., 1., .2 - distance(position.xy, pointer.xy));
           
