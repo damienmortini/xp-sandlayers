@@ -15,6 +15,7 @@ import Pointer from "../../node_modules/dlib/input/Pointer.js";
 import SandLayer from "./SandLayer.js";
 import GLObject from "../../node_modules/dlib/gl/GLObject.js";
 import BasicShader from "../../node_modules/dlib/shaders/BasicShader.js";
+import BlurShader from "../../node_modules/dlib/shaders/BlurShader.js";
 
 const DEPTH_FRAME_BUFFER_SIZE = 1024;
 
@@ -33,8 +34,17 @@ export default class SandLayerProcessing {
       })
     });
 
-    this.frameBuffer2 = new GLFrameBuffer(this.frameBuffer1);
+    this.frameBuffer2 = new GLFrameBuffer({
+      gl: this.gl
+    });
     this.frameBuffer2.attach({
+      texture: new GLTexture(this.frameBuffer1.colorTextures[0])
+    });
+
+    this.frameBuffer3 = new GLFrameBuffer({
+      gl: this.gl
+    });
+    this.frameBuffer3.attach({
       texture: new GLTexture(this.frameBuffer1.colorTextures[0])
     });
 
@@ -47,9 +57,52 @@ export default class SandLayerProcessing {
     }, new PlaneMesh({
       width: 2, 
       height: 2,
-      uvs: null,
       normals: null
     })));
+
+    this.basicPass = new GLObject({
+      gl,
+      mesh: quad,
+      program: new GLProgram({
+        gl,
+        shaders: [
+          new BasicShader({
+            normals: false
+          }),
+          {
+            uniforms: [
+              ["frameTexture", this.frameBuffer1.colorTextures[0]]
+            ],
+            fragmentShaderChunks: [
+              ["start", `
+              uniform sampler2D frameTexture;
+              `
+              ],
+              ["end", `
+                vec2 uv = vPosition.xy * .5 + .5;
+                fragColor = texture(frameTexture, uv);
+              `
+              ]
+            ]
+          }]
+      })
+    });
+
+    this.blurPass = new GLObject({
+      gl, 
+      mesh: quad,
+      program: new GLProgram({
+        gl,
+        shaders: [
+          new BasicShader({
+            normals: false
+          }),
+          new BlurShader({
+            texture: this.frameBuffer1.colorTextures[0]
+          })
+        ]
+      })
+    });
 
     this.depthPass = new GLObject({
       gl,
@@ -58,31 +111,30 @@ export default class SandLayerProcessing {
         gl,
         shaders: [
           new BasicShader({
-            normal: false,
-            uv: false
+            normals: false
           }),
           {
             uniforms: [
-              ["sandDepthTexture", this.frameBuffer1.colorTextures[0]]
+              ["sandDepthTexture", this.frameBuffer3.colorTextures[0]]
             ],
             fragmentShaderChunks: [
               ["start", `
               uniform sampler2D sandDepthTexture;
     
-              ${DepthShader.bumpFromDepth()}
+              ${DepthShader.bumpFromDepth({
+                getDepth: "return texture(depthTexture, uv).a;"
+              })}
               `
               ],
               ["end", `
               vec2 uv = vPosition.xy * .5 + .5;
-              // fragColor = texture(sandDepthTexture, uv);
-              vec4 bump = bumpFromDepth(sandDepthTexture, uv, vec2(1024.), .1);
-    
+              vec4 bump = bumpFromDepth(sandDepthTexture, uv, vec2(512.), 1.);
+              
               vec3 color = vec3(1., .5, .5);
               color += max(0., dot(vec3(1.), bump.xyz)) * .2;
-    
-              color = bump.xyz;
-              // color = vec3(bump.w);
-    
+              
+              color = bump.xyz * .5 + .5;
+              
               fragColor = vec4(color, 1.);
               `
               ]
@@ -97,11 +149,37 @@ export default class SandLayerProcessing {
     this.gl.viewport(0, 0, DEPTH_FRAME_BUFFER_SIZE, DEPTH_FRAME_BUFFER_SIZE);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT | this.gl.DEPTH_BUFFER_BIT);
     this.sandLayer.draw({
-      pointer
+      pointer,
+      frameTexture: this.frameBuffer2.colorTextures[0]
     });
     this.frameBuffer1.unbind();
+        
+    this.frameBuffer2.bind();
+    this.blurPass.program.use();
+    this.blurPass.program.uniforms.set("blurTexture", this.frameBuffer1.colorTextures[0]);
+    this.blurPass.program.uniforms.set("blurDistance", [0, .25]);
+    this.blurPass.draw();
+    this.frameBuffer2.unbind();
+    
+    this.frameBuffer3.bind();
+    this.blurPass.program.uniforms.set("blurTexture", this.frameBuffer2.colorTextures[0]);
+    this.blurPass.program.uniforms.set("blurDistance", [.25, 0]);
+    this.blurPass.draw();
+    this.frameBuffer3.unbind();
+
+    this.frameBuffer2.bind();
+    this.depthPass.draw();
+    this.frameBuffer2.unbind();
 
     this.gl.viewport(0, 0, this.gl.drawingBufferWidth, this.gl.drawingBufferHeight);
-    this.depthPass.draw();
+    
+    this.basicPass.program.use();
+    this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer2.colorTextures[0]);
+    this.basicPass.draw();
+
+    // this.sandLayer.draw({
+    //   pointer,
+    //   frameTexture: this.frameBuffer2.colorTextures[0]
+    // });
   }
 }

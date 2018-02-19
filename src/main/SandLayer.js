@@ -22,23 +22,34 @@ export default class SandLayer {
           uniform mat4 projectionView;
           uniform mat4 transform;
           uniform vec4 pointer;
+          uniform sampler2D frameTexture;
 
           in vec3 position;
           in vec3 velocity;
 
           out vec3 vPosition;
           out vec3 vVelocity;
+          out vec4 vTest;
         `],
         ["end", `
           vec3 position = position;
           vec3 velocity = velocity;
           vec4 pointer = pointer;
 
-          velocity.xy += pointer.zw * .002 * (.2 + position.z * .8) * smoothstep(0., 1., .3 - distance(position.xy, pointer.xy));
-          velocity *= .95;
+          velocity.xy += pointer.zw * .0001 * step(distance(position.xy, pointer.xy), .1);
+          // velocity.xy += pointer.zw * .002 * (.2 + position.z * .8) * smoothstep(0., 1., .3 - distance(position.xy, pointer.xy));
           
-          position += velocity;
+          position += velocity * 10.;
           position *= sign(1. - abs(position));
+          
+          vec3 normal = texture(frameTexture, position.xy * .5 + .5).rgb * 2. - 1.;
+          vTest.r = max(0., dot(normalize(velocity.xy), -normalize(normal.xy)));
+          velocity *= .5 + vTest.r * .5;
+          // vTest.xy = reflect(normalize(velocity.xy), normal.xy) * .5 + .5;
+          // position.xy += vTest.xy * .0001;
+          // position.z = 0.;
+          // velocity *= 1. - clamp(length(frame.xy), 0., 1.) * .25;
+          // velocity *= .5;
           
           // gl_Position = projectionView * transform * vec4(vec3(position.xy, position.z * .1), 1.);
           gl_Position = vec4(vec3(position.xy, position.z * .1), 1.);
@@ -55,8 +66,11 @@ export default class SandLayer {
         ["start", `
           precision highp float;
 
+          uniform sampler2D frameTexture;
+
           in vec3 vVelocity;
           in vec3 vPosition;
+          in vec4 vTest;
         `],
         ["end", `
           // if(length(gl_PointCoord * 2. - 1.) > 1.) {
@@ -68,7 +82,13 @@ export default class SandLayer {
           // color += length(vVelocity * 100.);
           // fragColor = vec4(color, 1.);
           // gl_FragDepth = 1. - vPosition.z;
-          fragColor = vec4(.01);
+          // fragColor = vec4(.01);
+          // fragColor = vec4(1.);
+          fragColor.a = .02;
+          // fragColor.a = 1.;
+          // fragColor.rgb = vec3(1.);
+          // fragColor.gb *= 1. - vTest;
+          // fragColor.rgb = texture(frameTexture, vPosition.xy * .5 + .5).rgb;
         `]
       ]
     });
@@ -128,9 +148,9 @@ export default class SandLayer {
     });
   }
 
-  draw({ pointer }) {
+  draw({ pointer, frameTexture }) {
     this.gl.enable(this.gl.BLEND);
-    this.gl.blendFunc(this.gl.ONE, this.gl.ONE);
+    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
 
     this.program.use();
     this.program.uniforms.set("pointer", [
@@ -147,12 +167,14 @@ export default class SandLayer {
       target: this.gl.TRANSFORM_FEEDBACK_BUFFER,
       index: 0
     });
+    frameTexture.bind();
     this.gl.beginTransformFeedback(this.gl.POINTS);
     this.mesh.draw({
       mode: this.gl.POINTS,
       count: GRAINS
     });
     this.gl.endTransformFeedback();
+    frameTexture.unbind();
     this.transformFeedbackBuffer2.unbind({
       target: this.gl.TRANSFORM_FEEDBACK_BUFFER,
       index: 0
