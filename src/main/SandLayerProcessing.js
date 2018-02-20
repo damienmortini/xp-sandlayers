@@ -22,6 +22,20 @@ const DEPTH_FRAME_BUFFER_SIZE = 512;
 export default class SandLayerProcessing {
   constructor({ gl }) {
     this.gl = gl;
+
+    this.blurDistance = .25;
+    GUI.add({
+      object: this,
+      key: "blurDistance",
+      type: "range" 
+    });
+
+    this.displayBumpMap = false;
+    GUI.add({
+      object: this,
+      key: "displayBumpMap"
+    });
+
     this.frameBuffer1 = new GLFrameBuffer({
       gl: this.gl
     });
@@ -71,17 +85,18 @@ export default class SandLayerProcessing {
           }),
           {
             uniforms: [
-              ["frameTexture", this.frameBuffer1.colorTextures[0]]
+              ["frameTexture", this.frameBuffer1.colorTextures[0]],
+              ["intensity", 1]              
             ],
             fragmentShaderChunks: [
               ["start", `
               uniform sampler2D frameTexture;
+              uniform float intensity;
               `
               ],
               ["end", `
                 vec2 uv = vPosition.xy * .5 + .5;
-                // fragColor = texture(frameTexture, uv);
-                fragColor = texture(frameTexture, uv) * 10.;
+                fragColor = texture(frameTexture, uv) * intensity;
               `
               ]
             ]
@@ -139,7 +154,7 @@ export default class SandLayerProcessing {
               
               color = bump.xyz * .5 + .5;
               
-              fragColor = vec4(color, 1.);
+              fragColor = vec4(color, bump.w);
               `
               ]
             ]
@@ -162,13 +177,13 @@ export default class SandLayerProcessing {
     this.frameBuffer2.bind();
     this.blurPass.program.use();
     this.blurPass.program.uniforms.set("blurTexture", this.frameBuffer1.colorTextures[0]);
-    this.blurPass.program.uniforms.set("blurDistance", [0, .25]);
+    this.blurPass.program.uniforms.set("blurDistance", [0, this.blurDistance]);
     this.blurPass.draw();
     this.frameBuffer2.unbind();
     
     this.frameBuffer3.bind();
     this.blurPass.program.uniforms.set("blurTexture", this.frameBuffer2.colorTextures[0]);
-    this.blurPass.program.uniforms.set("blurDistance", [.25, 0]);
+    this.blurPass.program.uniforms.set("blurDistance", [this.blurDistance, 0]);
     this.blurPass.draw();
     this.frameBuffer3.unbind();
 
@@ -177,10 +192,15 @@ export default class SandLayerProcessing {
     this.frameBuffer2.unbind();
 
     this.gl.viewport(0, 0, this.gl.drawingBufferWidth, this.gl.drawingBufferHeight);
-    
+  
     this.basicPass.program.use();
-    // this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer2.colorTextures[0]);
-    this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer1.colorTextures[0]);
+    if(this.displayBumpMap) {
+      this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer2.colorTextures[0]);
+      this.basicPass.program.uniforms.set("intensity", 1);
+    } else {
+      this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer1.colorTextures[0]);
+      this.basicPass.program.uniforms.set("intensity", 10);
+    }
     this.basicPass.draw();
 
     // this.sandLayer.draw({

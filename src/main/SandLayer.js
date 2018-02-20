@@ -1,15 +1,43 @@
 import GLProgram from "../../node_modules/dlib/gl/GLProgram.js";
 import Matrix4 from "../../node_modules/dlib/math/Matrix4.js";
+import Vector2 from "../../node_modules/dlib/math/Vector2.js";
 import GLMesh from "../../node_modules/dlib/gl/GLMesh.js";
 import GLVertexAttribute from "../../node_modules/dlib/gl/GLVertexAttribute.js";
 import GLBuffer from "../../node_modules/dlib/gl/GLBuffer.js";
 import GLVertexArray from "../../node_modules/dlib/gl/GLVertexArray.js";
+import GUI from "../../node_modules/dlib/gui/GUI.js";
 
 const GRAINS = 500000;
 
 export default class SandLayer {
   constructor({ gl }) {
     this.gl = gl;
+
+    this.useCameraTransform = false;
+    GUI.add({
+      object: this,
+      key: "useCameraTransform"
+    });
+    
+    this.wind = new Vector2();
+    GUI.add({
+      object: this.wind,
+      key: "x",
+      min: -1,
+      type: "range"
+    });
+    GUI.add({
+      object: this.wind,
+      key: "y",
+      min: -1,
+      type: "range"
+    });
+
+    this.needsPointerDown = false;
+    GUI.add({
+      object: this,
+      key: "needsPointerDown"
+    });
 
     this.program = new GLProgram({
       gl: this.gl,
@@ -22,6 +50,8 @@ export default class SandLayer {
           uniform mat4 projectionView;
           uniform mat4 transform;
           uniform vec4 pointer;
+          uniform vec2 globalWind;
+          uniform float physic3DRatio;
           uniform sampler2D frameTexture;
 
           in vec3 position;
@@ -36,20 +66,27 @@ export default class SandLayer {
           vec3 velocity = velocity;
           vec4 pointer = pointer;
 
-          velocity += .001;
+          velocity.xy += globalWind * .01;
 
-          // velocity.xy += pointer.zw * .0001 * step(distance(position.xy, pointer.xy), .1);
-          velocity.xy += pointer.zw * .01 * smoothstep(0., 1., .2 - distance(position.xy, pointer.xy));
+          // velocity.xy += pointer.zw * .001 * step(distance(position.xy, pointer.xy), .1);
+          velocity.xy += pointer.zw * .02 * smoothstep(0., 1., .2 - distance(position.xy, pointer.xy));
           
           position += velocity;
           position *= sign(1. - abs(position));
-          position.z -= .1;
-          position.z = max(position.z, 0.);
+          position.z = max(position.z -.1, 0.);
           
-          vec3 normal = texture(frameTexture, position.xy * .5 + .5).rgb * 2. - 1.;
-          velocity = reflect(velocity, normal);
-          velocity *= 1. - max(0., dot(normalize(velocity), normal));
+          vec4 bump = texture(frameTexture, position.xy * .5 + .5);
+
+          float height = bump.w;
+          vec3 normal = bump.rgb * 2. - 1.;
           
+          vec3 velocity1 = velocity * (1. - min(length(normal.xy), 1.));
+
+          vec3 velocity2 = reflect(velocity, normal);
+          velocity2 *= 1. - max(0., dot(normalize(velocity2), normal));
+
+          velocity = mix(velocity1, velocity2, physic3DRatio);
+
           gl_Position = projectionView * transform * vec4(position, 1.);
           gl_PointSize = 1.;
           
@@ -126,6 +163,16 @@ export default class SandLayer {
       mesh: this.mesh,
       program: this.program
     });
+
+    GUI.add({
+      object: {value: false},
+      key: "value",
+      label: "Use 3D physic",
+      onChange: (value) => {
+        this.program.use();
+        this.program.uniforms.set("physic3DRatio", value ? 1 : 0)
+      }
+    });
   }
 
   draw({ pointer, frameTexture, camera }) {
@@ -133,12 +180,16 @@ export default class SandLayer {
     this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
 
     this.program.use();
-    // this.program.uniforms.set("projectionView", camera.projectionView);
+    if(this.useCameraTransform) {
+      this.program.uniforms.set("projectionView", camera.projectionView);
+    }
+    
+    this.program.uniforms.set("globalWind", this.wind);
     this.program.uniforms.set("pointer", [
       pointer.normalizedCenteredFlippedY.x,
       pointer.normalizedCenteredFlippedY.y,
-      pointer.velocity.x,
-      -pointer.velocity.y
+      pointer.velocity.x * (!this.needsPointerDown || pointer.downed ? 1 : 0),
+      -pointer.velocity.y * (!this.needsPointerDown || pointer.downed ? 1 : 0)
     ]);
     
     this.vao1.bind();
