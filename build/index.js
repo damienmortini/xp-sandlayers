@@ -1825,9 +1825,8 @@ const forEach = (function() {
 })();
 
 class Vector2 extends Float32Array {
-  constructor(x = 0, y = 0) {
-    super(2);
-    this.set(x, y);
+  constructor(array = [0, 0]) {
+    super(array);
     return this;
   }
 
@@ -1917,7 +1916,7 @@ class Vector2 extends Float32Array {
   }
 
   clone() {
-    return new Vector2(this.x, this.y);
+    return new Vector2(this);
   }
 }
 
@@ -2610,7 +2609,7 @@ class Vector3 extends Float32Array {
   }
 
   clone() {
-    return new Vector3(this.x, this.y, this.z);
+    return new Vector3(this);
   }
 }
 
@@ -6657,6 +6656,32 @@ class SandLayer {
   constructor({ gl }) {
     this.gl = gl;
 
+    this.useCameraTransform = false;
+    GUI.add({
+      object: this,
+      key: "useCameraTransform"
+    });
+    
+    this.wind = new Vector2();
+    GUI.add({
+      object: this.wind,
+      key: "x",
+      min: -1,
+      type: "range"
+    });
+    GUI.add({
+      object: this.wind,
+      key: "y",
+      min: -1,
+      type: "range"
+    });
+
+    this.needsPointerDown = false;
+    GUI.add({
+      object: this,
+      key: "needsPointerDown"
+    });
+
     this.program = new GLProgram({
       gl: this.gl,
       transformFeedbackVaryings: ["vPosition", "vVelocity"],
@@ -6668,6 +6693,8 @@ class SandLayer {
           uniform mat4 projectionView;
           uniform mat4 transform;
           uniform vec4 pointer;
+          uniform vec2 globalWind;
+          uniform float physic3DRatio;
           uniform sampler2D frameTexture;
 
           in vec3 position;
@@ -6682,20 +6709,27 @@ class SandLayer {
           vec3 velocity = velocity;
           vec4 pointer = pointer;
 
-          velocity += .001;
+          velocity.xy += globalWind * .01;
 
-          // velocity.xy += pointer.zw * .0001 * step(distance(position.xy, pointer.xy), .1);
-          velocity.xy += pointer.zw * .01 * smoothstep(0., 1., .2 - distance(position.xy, pointer.xy));
+          // velocity.xy += pointer.zw * .001 * step(distance(position.xy, pointer.xy), .1);
+          velocity.xy += pointer.zw * .02 * smoothstep(0., 1., .2 - distance(position.xy, pointer.xy));
           
           position += velocity;
           position *= sign(1. - abs(position));
-          position.z -= .1;
-          position.z = max(position.z, 0.);
+          position.z = max(position.z -.1, 0.);
           
-          vec3 normal = texture(frameTexture, position.xy * .5 + .5).rgb * 2. - 1.;
-          velocity = reflect(velocity, normal);
-          velocity *= 1. - max(0., dot(normalize(velocity), normal));
+          vec4 bump = texture(frameTexture, position.xy * .5 + .5);
+
+          float height = bump.w;
+          vec3 normal = bump.rgb * 2. - 1.;
           
+          vec3 velocity1 = velocity * (1. - min(length(normal.xy), 1.));
+
+          vec3 velocity2 = reflect(velocity, normal);
+          velocity2 *= 1. - max(0., dot(normalize(velocity2), normal));
+
+          velocity = mix(velocity1, velocity2, physic3DRatio);
+
           gl_Position = projectionView * transform * vec4(position, 1.);
           gl_PointSize = 1.;
           
@@ -6772,6 +6806,16 @@ class SandLayer {
       mesh: this.mesh,
       program: this.program
     });
+
+    GUI.add({
+      object: {value: false},
+      key: "value",
+      label: "Use 3D physic",
+      onChange: (value) => {
+        this.program.use();
+        this.program.uniforms.set("physic3DRatio", value ? 1 : 0);
+      }
+    });
   }
 
   draw({ pointer, frameTexture, camera }) {
@@ -6779,12 +6823,16 @@ class SandLayer {
     this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
 
     this.program.use();
-    // this.program.uniforms.set("projectionView", camera.projectionView);
+    if(this.useCameraTransform) {
+      this.program.uniforms.set("projectionView", camera.projectionView);
+    }
+    
+    this.program.uniforms.set("globalWind", this.wind);
     this.program.uniforms.set("pointer", [
       pointer.normalizedCenteredFlippedY.x,
       pointer.normalizedCenteredFlippedY.y,
-      pointer.velocity.x,
-      -pointer.velocity.y
+      pointer.velocity.x * (!this.needsPointerDown || pointer.downed ? 1 : 0),
+      -pointer.velocity.y * (!this.needsPointerDown || pointer.downed ? 1 : 0)
     ]);
     
     this.vao1.bind();
@@ -6903,6 +6951,20 @@ const DEPTH_FRAME_BUFFER_SIZE = 512;
 class SandLayerProcessing {
   constructor({ gl }) {
     this.gl = gl;
+
+    this.blurDistance = .25;
+    GUI.add({
+      object: this,
+      key: "blurDistance",
+      type: "range" 
+    });
+
+    this.displayBumpMap = false;
+    GUI.add({
+      object: this,
+      key: "displayBumpMap"
+    });
+
     this.frameBuffer1 = new GLFrameBuffer({
       gl: this.gl
     });
@@ -6952,17 +7014,18 @@ class SandLayerProcessing {
           }),
           {
             uniforms: [
-              ["frameTexture", this.frameBuffer1.colorTextures[0]]
+              ["frameTexture", this.frameBuffer1.colorTextures[0]],
+              ["intensity", 1]              
             ],
             fragmentShaderChunks: [
               ["start", `
               uniform sampler2D frameTexture;
+              uniform float intensity;
               `
               ],
               ["end", `
                 vec2 uv = vPosition.xy * .5 + .5;
-                // fragColor = texture(frameTexture, uv);
-                fragColor = texture(frameTexture, uv) * 10.;
+                fragColor = texture(frameTexture, uv) * intensity;
               `
               ]
             ]
@@ -7020,7 +7083,7 @@ class SandLayerProcessing {
               
               color = bump.xyz * .5 + .5;
               
-              fragColor = vec4(color, 1.);
+              fragColor = vec4(color, bump.w);
               `
               ]
             ]
@@ -7043,13 +7106,13 @@ class SandLayerProcessing {
     this.frameBuffer2.bind();
     this.blurPass.program.use();
     this.blurPass.program.uniforms.set("blurTexture", this.frameBuffer1.colorTextures[0]);
-    this.blurPass.program.uniforms.set("blurDistance", [0, .25]);
+    this.blurPass.program.uniforms.set("blurDistance", [0, this.blurDistance]);
     this.blurPass.draw();
     this.frameBuffer2.unbind();
     
     this.frameBuffer3.bind();
     this.blurPass.program.uniforms.set("blurTexture", this.frameBuffer2.colorTextures[0]);
-    this.blurPass.program.uniforms.set("blurDistance", [.25, 0]);
+    this.blurPass.program.uniforms.set("blurDistance", [this.blurDistance, 0]);
     this.blurPass.draw();
     this.frameBuffer3.unbind();
 
@@ -7058,10 +7121,15 @@ class SandLayerProcessing {
     this.frameBuffer2.unbind();
 
     this.gl.viewport(0, 0, this.gl.drawingBufferWidth, this.gl.drawingBufferHeight);
-    
+  
     this.basicPass.program.use();
-    // this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer2.colorTextures[0]);
-    this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer1.colorTextures[0]);
+    if(this.displayBumpMap) {
+      this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer2.colorTextures[0]);
+      this.basicPass.program.uniforms.set("intensity", 1);
+    } else {
+      this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer1.colorTextures[0]);
+      this.basicPass.program.uniforms.set("intensity", 10);
+    }
     this.basicPass.draw();
 
     // this.sandLayer.draw({
