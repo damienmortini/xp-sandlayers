@@ -1,17 +1,31 @@
 import GLProgram from "../../node_modules/dlib/gl/GLProgram.js";
 import Matrix4 from "../../node_modules/dlib/math/Matrix4.js";
 import Vector2 from "../../node_modules/dlib/math/Vector2.js";
+import NoiseShader from "../../node_modules/dlib/shaders/NoiseShader.js";
 import GLMesh from "../../node_modules/dlib/gl/GLMesh.js";
 import GLVertexAttribute from "../../node_modules/dlib/gl/GLVertexAttribute.js";
 import GLBuffer from "../../node_modules/dlib/gl/GLBuffer.js";
 import GLVertexArray from "../../node_modules/dlib/gl/GLVertexArray.js";
 import GUI from "../../node_modules/dlib/gui/GUI.js";
+import Ticker from "../../node_modules/dlib/utils/Ticker.js";
 
-const GRAINS = 500000;
+const SAND_GRAINS_NUMBER = GUI.add({
+  object: {value: 500000},
+  key: "value",
+  label: "Sand grains number",
+  reload: true,
+  options: [
+    100000,
+    500000,
+    1000000
+  ]
+}).value;
 
 export default class SandLayer {
   constructor({ gl }) {
     this.gl = gl;
+
+    this._matrix4 = new Matrix4();
 
     this.useCameraTransform = false;
     GUI.add({
@@ -39,6 +53,14 @@ export default class SandLayer {
       key: "needsPointerDown"
     });
 
+    this.pointSize = 1.;
+    GUI.add({
+      object: this,
+      key: "pointSize",
+      type: "range",
+      max: 5
+    });
+
     this.program = new GLProgram({
       gl: this.gl,
       transformFeedbackVaryings: ["vPosition", "vVelocity"],
@@ -51,7 +73,9 @@ export default class SandLayer {
           uniform mat4 transform;
           uniform vec4 pointer;
           uniform vec2 globalWind;
-          uniform float physic3DRatio;
+          uniform bool use3Dphysic;
+          uniform float time;
+          uniform float pointSize;
           uniform sampler2D frameTexture;
 
           in vec3 position;
@@ -60,6 +84,8 @@ export default class SandLayer {
           out vec3 vPosition;
           out vec3 vVelocity;
           out vec4 vTest;
+
+          ${NoiseShader.random()}
         `],
         ["end", `
           vec3 position = position;
@@ -71,24 +97,34 @@ export default class SandLayer {
           // velocity.xy += pointer.zw * .001 * step(distance(position.xy, pointer.xy), .1);
           velocity.xy += pointer.zw * .02 * smoothstep(0., 1., .2 - distance(position.xy, pointer.xy));
           
-          position += velocity;
+          position.xy += velocity.xy;
           position *= sign(1. - abs(position));
-          position.z = max(position.z -.1, 0.);
+          // position = clamp(position, vec3(-1.), vec3(1.));
+          // position.z = max(position.z, .1);
           
           vec4 bump = texture(frameTexture, position.xy * .5 + .5);
 
           float height = bump.w;
+          if(length(velocity.xy) > .001) {
+            position.z = height + .1;
+          }
           vec3 normal = bump.rgb * 2. - 1.;
           
-          vec3 velocity1 = velocity * (1. - min(length(normal.xy), 1.));
+          if(use3Dphysic) {
+            velocity = reflect(velocity, normal);
+            velocity *= 1. - max(0., dot(normalize(velocity), normal));
+          } else {
+            velocity = velocity * (1. - min(length(normal.xy), 1.));
+          }
+          // velocity.z = max(-.01, velocity.z - .01);
 
-          vec3 velocity2 = reflect(velocity, normal);
-          velocity2 *= 1. - max(0., dot(normalize(velocity2), normal));
+          // vec3 newPosition = vec3(random(position.x * .001) * 2. - 1., random(position.y * .001) * 2. - 1., 0.);
+          // if(abs(position.x) > 1. || abs(position.y) > 1.) {
+          //   position = newPosition;
+          // }
 
-          velocity = mix(velocity1, velocity2, physic3DRatio);
-
-          gl_Position = projectionView * transform * vec4(position, 1.);
-          gl_PointSize = 1.;
+          gl_Position = projectionView * transform * vec4(position * vec3(1., 1., .05), 1.);
+          gl_PointSize = pointSize;
           
           vPosition = position;
           vVelocity = velocity;
@@ -99,22 +135,26 @@ export default class SandLayer {
           precision highp float;
 
           uniform sampler2D frameTexture;
+          uniform float opacity;
 
           in vec3 vVelocity;
           in vec3 vPosition;
           in vec4 vTest;
         `],
         ["end", `
-          fragColor.a = .02;
+          fragColor.a = opacity;
+          fragColor.a = 1.;
+          fragColor.rgb = vec3(vPosition.z);
+          gl_FragDepth = -vPosition.z;
         `]
       ]
     });
 
-    const data = new Float32Array(GRAINS * 6);
-    for (let index = 0; index < GRAINS * 2; index++) {
+    const data = new Float32Array(SAND_GRAINS_NUMBER * 6);
+    for (let index = 0; index < SAND_GRAINS_NUMBER * 2; index++) {
       data[index * 6] = Math.random() * 2 - 1;
       data[index * 6 + 1] = Math.random() * 2 - 1;
-      // data[index * 6 + 2] = index / GRAINS;
+      // data[index * 6 + 2] = index / SAND_GRAINS_NUMBER;
     }
 
     this.transformFeedbackBuffer1 = new GLBuffer({
@@ -170,20 +210,37 @@ export default class SandLayer {
       label: "Use 3D physic",
       onChange: (value) => {
         this.program.use();
-        this.program.uniforms.set("physic3DRatio", value ? 1 : 0)
+        this.program.uniforms.set("use3Dphysic", value)
+      }
+    });
+
+    GUI.add({
+      object: {value: .02},
+      key: "value",
+      label: "Opacity",
+      type: "range",
+      onChange: (value) => {
+        this.program.use();
+        this.program.uniforms.set("opacity", value)
       }
     });
   }
 
-  draw({ pointer, frameTexture, camera }) {
-    this.gl.enable(this.gl.BLEND);
-    this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
+  draw({ pointer, frameTexture, camera, pointSize = 1, useCamera = true }) {
+    this.gl.enable(this.gl.DEPTH_TEST);
+    // this.gl.enable(this.gl.BLEND);
+    // this.gl.blendColor(0, 0, 0, 1);
+    // this.gl.blendFunc(this.gl.SRC_ALPHA, this.gl.ONE_MINUS_SRC_ALPHA);
 
     this.program.use();
-    if(this.useCameraTransform) {
+    if(!useCamera || this.useCameraTransform) {
       this.program.uniforms.set("projectionView", camera.projectionView);
+    } else {
+      this.program.uniforms.set("projectionView", this._matrix4);
     }
     
+    this.program.uniforms.set("time", Ticker.time);
+    this.program.uniforms.set("pointSize", pointSize * this.pointSize);
     this.program.uniforms.set("globalWind", this.wind);
     this.program.uniforms.set("pointer", [
       pointer.normalizedCenteredFlippedY.x,
@@ -203,7 +260,7 @@ export default class SandLayer {
     this.gl.beginTransformFeedback(this.gl.POINTS);
     this.mesh.draw({
       mode: this.gl.POINTS,
-      count: GRAINS
+      count: SAND_GRAINS_NUMBER
     });
     this.gl.endTransformFeedback();
     frameTexture.unbind();

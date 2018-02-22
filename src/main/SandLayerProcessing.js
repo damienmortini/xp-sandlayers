@@ -17,7 +17,18 @@ import GLObject from "../../node_modules/dlib/gl/GLObject.js";
 import BasicShader from "../../node_modules/dlib/shaders/BasicShader.js";
 import BlurShader from "../../node_modules/dlib/shaders/BlurShader.js";
 
-const DEPTH_FRAME_BUFFER_SIZE = 512;
+const FRAME_BUFFER_SIZE = GUI.add({
+  object: {value: 512},
+  key: "value",
+  label: "Frame Buffer Size",
+  options: [
+    256,
+    512,
+    1024,
+    2048
+  ],
+  reload: true
+}).value;
 
 export default class SandLayerProcessing {
   constructor({ gl }) {
@@ -30,10 +41,15 @@ export default class SandLayerProcessing {
       type: "range" 
     });
 
-    this.displayBumpMap = false;
+    this.displayMap = "default";
     GUI.add({
       object: this,
-      key: "displayBumpMap"
+      key: "displayMap",
+      options: [
+        "default",
+        "bump",
+        "height"
+      ]
     });
 
     this.frameBuffer1 = new GLFrameBuffer({
@@ -42,8 +58,8 @@ export default class SandLayerProcessing {
     this.frameBuffer1.attach({
       texture: new GLTexture({
         gl: this.gl,
-        width: DEPTH_FRAME_BUFFER_SIZE,
-        height: DEPTH_FRAME_BUFFER_SIZE,
+        width: FRAME_BUFFER_SIZE,
+        height: FRAME_BUFFER_SIZE,
         minFilter: this.gl.LINEAR
       })
     });
@@ -74,7 +90,7 @@ export default class SandLayerProcessing {
       normals: null
     })));
 
-    this.basicPass = new GLObject({
+    this.sandPass = new GLObject({
       gl,
       mesh: quad,
       program: new GLProgram({
@@ -90,13 +106,18 @@ export default class SandLayerProcessing {
             ],
             fragmentShaderChunks: [
               ["start", `
-              uniform sampler2D frameTexture;
-              uniform float intensity;
+                uniform sampler2D frameTexture;
+                uniform float intensity;
+                uniform float basic;
               `
               ],
               ["end", `
                 vec2 uv = vPosition.xy * .5 + .5;
-                fragColor = texture(frameTexture, uv) * intensity;
+
+                fragColor = texture(frameTexture, uv);
+                fragColor.a = 1.;
+
+                fragColor = mix(fragColor, texture(frameTexture, uv) * intensity, basic);
               `
               ]
             ]
@@ -139,8 +160,8 @@ export default class SandLayerProcessing {
     
               ${DepthShader.bumpFromDepth({
                 getDepth: `
-                  // return texture(depthTexture, uv).r;
-                  return smoothstep(0., 1., texture(depthTexture, uv).r);
+                  return texture(depthTexture, uv).r;
+                  // return smoothstep(0., 1., texture(depthTexture, uv).r);
                 `
               })}
               `
@@ -148,13 +169,7 @@ export default class SandLayerProcessing {
               ["end", `
               vec2 uv = vPosition.xy * .5 + .5;
               vec4 bump = bumpFromDepth(sandDepthTexture, uv, vec2(512.), 1.);
-              
-              vec3 color = vec3(1., .5, .5);
-              color += max(0., dot(vec3(1.), bump.xyz)) * .2;
-              
-              color = bump.xyz * .5 + .5;
-              
-              fragColor = vec4(color, bump.w);
+              fragColor = vec4(bump.xyz * .5 + .5, bump.w);
               `
               ]
             ]
@@ -165,11 +180,13 @@ export default class SandLayerProcessing {
 
   draw({ pointer, camera }) {
     this.frameBuffer1.bind();
-    this.gl.viewport(0, 0, DEPTH_FRAME_BUFFER_SIZE, DEPTH_FRAME_BUFFER_SIZE);
+    this.gl.viewport(0, 0, FRAME_BUFFER_SIZE, FRAME_BUFFER_SIZE);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT | this.gl.DEPTH_BUFFER_BIT);
     this.sandLayer.draw({
+      pointSize: FRAME_BUFFER_SIZE / 512,
       pointer,
       camera,
+      useCamera: false,
       frameTexture: this.frameBuffer2.colorTextures[0]
     });
     this.frameBuffer1.unbind();
@@ -193,20 +210,27 @@ export default class SandLayerProcessing {
 
     this.gl.viewport(0, 0, this.gl.drawingBufferWidth, this.gl.drawingBufferHeight);
   
-    this.basicPass.program.use();
-    if(this.displayBumpMap) {
-      this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer2.colorTextures[0]);
-      this.basicPass.program.uniforms.set("intensity", 1);
+    this.sandPass.program.use();
+    if (this.displayMap === "bump") {
+      this.sandPass.program.uniforms.set("frameTexture", this.frameBuffer2.colorTextures[0]);
+      this.sandPass.program.uniforms.set("intensity", 1);
+      this.sandPass.program.uniforms.set("basic", 1);
+    } else if (this.displayMap === "height") {
+      this.sandPass.program.uniforms.set("frameTexture", this.frameBuffer1.colorTextures[0]);
+      this.sandPass.program.uniforms.set("intensity", 1);
+      this.sandPass.program.uniforms.set("basic", 1);
     } else {
-      this.basicPass.program.uniforms.set("frameTexture", this.frameBuffer1.colorTextures[0]);
-      this.basicPass.program.uniforms.set("intensity", 10);
+      this.sandPass.program.uniforms.set("frameTexture", this.frameBuffer1.colorTextures[0]);
+      this.sandPass.program.uniforms.set("intensity", 1);
+      this.sandPass.program.uniforms.set("basic", 0);
     }
-    this.basicPass.draw();
+    this.sandPass.draw();
 
-    // this.sandLayer.draw({
-    //   camera,
-    //   pointer,
-    //   frameTexture: this.frameBuffer2.colorTextures[0]
-    // });
+    this.sandLayer.draw({
+      pointSize: FRAME_BUFFER_SIZE / 512,
+      camera,
+      pointer,
+      frameTexture: this.frameBuffer2.colorTextures[0]
+    });
   }
 }
