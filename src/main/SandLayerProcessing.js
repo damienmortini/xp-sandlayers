@@ -52,10 +52,16 @@ export default class SandLayerProcessing {
       ]
     });
 
-    this.frameBuffer1 = new GLFrameBuffer({
+    this.displayPoints = false;
+    GUI.add({
+      object: this,
+      key: "displayPoints"
+    });
+
+    this.mainFrameBuffer = new GLFrameBuffer({
       gl: this.gl
     });
-    this.frameBuffer1.attach({
+    this.mainFrameBuffer.attach({
       texture: new GLTexture({
         gl: this.gl,
         width: FRAME_BUFFER_SIZE,
@@ -64,18 +70,25 @@ export default class SandLayerProcessing {
       })
     });
 
-    this.frameBuffer2 = new GLFrameBuffer({
+    this.blurFrameBuffer1 = new GLFrameBuffer({
       gl: this.gl
     });
-    this.frameBuffer2.attach({
-      texture: new GLTexture(this.frameBuffer1.colorTextures[0])
+    this.blurFrameBuffer1.attach({
+      texture: new GLTexture(this.mainFrameBuffer.colorTextures[0])
     });
 
-    this.frameBuffer3 = new GLFrameBuffer({
+    this.blurFrameBuffer2 = new GLFrameBuffer({
       gl: this.gl
     });
-    this.frameBuffer3.attach({
-      texture: new GLTexture(this.frameBuffer1.colorTextures[0])
+    this.blurFrameBuffer2.attach({
+      texture: new GLTexture(this.mainFrameBuffer.colorTextures[0])
+    });
+
+    this.bumpFrameBuffer = new GLFrameBuffer({
+      gl: this.gl
+    });
+    this.blurFrameBuffer2.attach({
+      texture: new GLTexture(this.mainFrameBuffer.colorTextures[0])
     });
 
     this.sandLayer = new SandLayer({
@@ -101,7 +114,7 @@ export default class SandLayerProcessing {
           }),
           {
             uniforms: [
-              ["frameTexture", this.frameBuffer1.colorTextures[0]],
+              ["frameTexture", this.mainFrameBuffer.colorTextures[0]],
               ["intensity", 1]              
             ],
             fragmentShaderChunks: [
@@ -109,15 +122,25 @@ export default class SandLayerProcessing {
                 uniform sampler2D frameTexture;
                 uniform float intensity;
                 uniform float basic;
+                uniform float heightOnly;
+                uniform vec3 colors[3];
               `
               ],
               ["end", `
                 vec2 uv = vPosition.xy * .5 + .5;
 
-                fragColor = texture(frameTexture, uv);
+                vec4 frameTexel = texture(frameTexture, uv);
+                
+                fragColor = frameTexel;
                 fragColor.a = 1.;
+                fragColor.rgb = mix(vec3(1., 1., 0.), vec3(0., 1., 1.), smoothstep(.4, .6, frameTexel.w));
+                fragColor.rgb = mix(vec3(1., 0., 1.), fragColor.rgb, smoothstep(0., .2, frameTexel.w));
 
-                fragColor = mix(fragColor, texture(frameTexture, uv) * intensity, basic);
+                vec3 normal = frameTexel.rgb * 2. - 1.;
+
+                fragColor.rgb *= .8 + dot(normalize(vec3(1.)), normal) * .2;
+
+                fragColor = mix(fragColor, mix(vec4(frameTexel.rgb * .5 + .5, frameTexel.w), vec4(vec3(frameTexel.w), 1.), heightOnly) * intensity, basic);
               `
               ]
             ]
@@ -135,7 +158,7 @@ export default class SandLayerProcessing {
             normals: false
           }),
           new BlurShader({
-            texture: this.frameBuffer1.colorTextures[0]
+            texture: this.mainFrameBuffer.colorTextures[0]
           })
         ]
       })
@@ -152,7 +175,7 @@ export default class SandLayerProcessing {
           }),
           {
             uniforms: [
-              ["sandDepthTexture", this.frameBuffer3.colorTextures[0]]
+              ["sandDepthTexture", this.blurFrameBuffer2.colorTextures[0]]
             ],
             fragmentShaderChunks: [
               ["start", `
@@ -161,7 +184,6 @@ export default class SandLayerProcessing {
               ${DepthShader.bumpFromDepth({
                 getDepth: `
                   return texture(depthTexture, uv).r;
-                  // return smoothstep(0., 1., texture(depthTexture, uv).r);
                 `
               })}
               `
@@ -179,7 +201,7 @@ export default class SandLayerProcessing {
   }
 
   draw({ pointer, camera }) {
-    this.frameBuffer1.bind();
+    this.mainFrameBuffer.bind();
     this.gl.viewport(0, 0, FRAME_BUFFER_SIZE, FRAME_BUFFER_SIZE);
     this.gl.clear(this.gl.COLOR_BUFFER_BIT | this.gl.DEPTH_BUFFER_BIT);
     this.sandLayer.draw({
@@ -187,50 +209,55 @@ export default class SandLayerProcessing {
       pointer,
       camera,
       useCamera: false,
-      frameTexture: this.frameBuffer2.colorTextures[0]
+      frameTexture: this.blurFrameBuffer1.colorTextures[0]
     });
-    this.frameBuffer1.unbind();
+    this.mainFrameBuffer.unbind();
         
-    this.frameBuffer2.bind();
+    this.blurFrameBuffer1.bind();
     this.blurPass.program.use();
-    this.blurPass.program.uniforms.set("blurTexture", this.frameBuffer1.colorTextures[0]);
+    this.blurPass.program.uniforms.set("blurTexture", this.mainFrameBuffer.colorTextures[0]);
     this.blurPass.program.uniforms.set("blurDistance", [0, this.blurDistance]);
     this.blurPass.draw();
-    this.frameBuffer2.unbind();
+    this.blurFrameBuffer1.unbind();
     
-    this.frameBuffer3.bind();
-    this.blurPass.program.uniforms.set("blurTexture", this.frameBuffer2.colorTextures[0]);
+    this.blurFrameBuffer2.bind();
+    this.blurPass.program.uniforms.set("blurTexture", this.blurFrameBuffer1.colorTextures[0]);
     this.blurPass.program.uniforms.set("blurDistance", [this.blurDistance, 0]);
     this.blurPass.draw();
-    this.frameBuffer3.unbind();
+    this.blurFrameBuffer2.unbind();
 
-    this.frameBuffer2.bind();
+    this.bumpFrameBuffer.bind();
     this.depthPass.draw();
-    this.frameBuffer2.unbind();
+    this.bumpFrameBuffer.unbind();
 
     this.gl.viewport(0, 0, this.gl.drawingBufferWidth, this.gl.drawingBufferHeight);
   
     this.sandPass.program.use();
     if (this.displayMap === "bump") {
-      this.sandPass.program.uniforms.set("frameTexture", this.frameBuffer2.colorTextures[0]);
+      this.sandPass.program.uniforms.set("frameTexture", this.bumpFrameBuffer.colorTextures[0]);
       this.sandPass.program.uniforms.set("intensity", 1);
       this.sandPass.program.uniforms.set("basic", 1);
+      this.sandPass.program.uniforms.set("heightOnly", 0);
     } else if (this.displayMap === "height") {
-      this.sandPass.program.uniforms.set("frameTexture", this.frameBuffer1.colorTextures[0]);
+      this.sandPass.program.uniforms.set("frameTexture", this.bumpFrameBuffer.colorTextures[0]);
       this.sandPass.program.uniforms.set("intensity", 1);
       this.sandPass.program.uniforms.set("basic", 1);
+      this.sandPass.program.uniforms.set("heightOnly", 1);
     } else {
-      this.sandPass.program.uniforms.set("frameTexture", this.frameBuffer1.colorTextures[0]);
+      this.sandPass.program.uniforms.set("frameTexture", this.bumpFrameBuffer.colorTextures[0]);
       this.sandPass.program.uniforms.set("intensity", 1);
+      this.sandPass.program.uniforms.set("heightOnly", 0);
       this.sandPass.program.uniforms.set("basic", 0);
     }
     this.sandPass.draw();
 
-    this.sandLayer.draw({
-      pointSize: FRAME_BUFFER_SIZE / 512,
-      camera,
-      pointer,
-      frameTexture: this.frameBuffer2.colorTextures[0]
-    });
+    if(this.displayPoints) {
+      this.sandLayer.draw({
+        pointSize: FRAME_BUFFER_SIZE / 128,
+        camera,
+        pointer,
+        frameTexture: this.blurFrameBuffer1.colorTextures[0]
+      });
+    }
   }
 }

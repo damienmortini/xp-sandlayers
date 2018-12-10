@@ -11,10 +11,10 @@ import GLTexture from "../../node_modules/dlib/gl/GLTexture.js";
 import PlaneMesh from "../../node_modules/dlib/3d/PlaneMesh.js";
 import GUI from "../../node_modules/dlib/gui/GUI.js";
 import DepthShader from "../../node_modules/dlib/shaders/DepthShader.js";
-import GLPlaneObject from "../../node_modules/dlib/gl/GLPlaneObject.js";
 import Pointer from "../../node_modules/dlib/input/Pointer.js";
 import SandLayer from "./SandLayer.js";
 import SandLayerProcessing from "./SandLayerProcessing.js";
+import FluidSimulation from "./fluidsimulation/FluidSimulation.js";
 
 export default class View {
   constructor({ canvas } = { canvas }) {
@@ -44,62 +44,14 @@ export default class View {
     });
 
     this.gl.clearColor(0, 0, 0, 1);
-    // this.gl.enable(this.gl.CULL_FACE);
-    // this.gl.enable(this.gl.DEPTH_TEST);
-
-    this.quad = new GLPlaneObject({
-      gl: this.gl,
-      transform: null,
-      width: 2,
-      height: 2,
-      normals: null,
-      uvs: null
-    });
 
     this.sandLayerProcessing = new SandLayerProcessing({
       gl: this.gl
     });
 
-    // this.quad = new GLMesh({
-    //   gl: this.gl,
-    //   attributes: [
-    //     ["position", new GLVertexAttribute({
-    //       gl: this.gl,
-    //       data: new PlaneMesh({
-    //         width: 2,
-    //         height: 2
-    //       }).positions,
-    //       size: 3
-    //     })]
-    //   ]
-    // });
-
-    // this.program = new GLProgram({
-    //   gl: this.gl,
-    //   vertexShaderChunks: [
-    //     ["start", `
-    //       in vec3 position;
-    //       out vec3 vPosition;
-    //     `],
-    //     ["end", `
-    //       vPosition = position;
-    //       gl_Position = vec4(position, 1.);
-    //     `]
-    //   ],
-    //   fragmentShaderChunks: [
-    //     ["start", `
-    //       precision highp float;
-
-    //       uniform sampler2D frameBufferTexture;
-
-    //       in vec3 vPosition;
-    //     `],
-    //     ["end", `
-    //       vec2 uv = vPosition.xy * .5 + .5;
-    //       fragColor = texture(frameBufferTexture, uv);
-    //     `]
-    //   ]
-    // });
+    this.fluidSimulation = new FluidSimulation({
+      gl: this.gl
+    });
   }
 
   resize(width, height) {
@@ -114,13 +66,11 @@ export default class View {
 
     this.cameraController.update();
 
-    // this.quad.draw({
-    //   // camera: this.camera
+    // this.sandLayerProcessing.draw({
+    //   pointer: this.pointer,
+    //   camera: this.camera
     // });
 
-    this.sandLayerProcessing.draw({
-      pointer: this.pointer,
-      camera: this.camera
-    });
+    this.fluidSimulation.draw();
   }
 }
